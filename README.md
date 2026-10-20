@@ -3,10 +3,6 @@
 Script PowerShell qui optimise Windows 11 pour le gaming : suppression du bloatware, services et démarrage minimaux,
 thème noir, réseau, son, Defender, NVIDIA, OBS (profil Twitch 1080p60), nettoyage final, etc.
 
-> **À lire avant de lancer** : crée un point de restauration (le script en crée un lui-même en première tâche),
-> teste d'abord sur une machine ou une VM de test. Le script désactive des services et des protections (Smart App Control,
-> intégrité de la mémoire...) : lis le code et adapte-le à ton usage.
-
 ## Installation / lancement (PowerShell)
 
 Ouvre **PowerShell** (pas CMD) et colle :
