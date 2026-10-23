@@ -1467,6 +1467,17 @@ $Tasks = @(
         } catch { L ERROR "Start menu failed: $($_.Exception.Message)" }
     } },
 
+    # Clic droit sur une appli de la barre des taches : option "Terminer la tache" (Windows 11 23H2+)
+    @{ Name = "Taskbar - End Task in right-click menu"; Script = {
+        param($tempDir)
+        try {
+            P 30 "Enabling End Task"
+            Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\TaskbarDeveloperSettings' 'TaskbarEndTask' 1 'DWord'
+            P 100 "Done"
+            L SUCCESS "End Task enabled in the taskbar right-click menu (Windows 11 23H2+) - applied after the Explorer restart"
+        } catch { L ERROR "End Task failed: $($_.Exception.Message)" }
+    } },
+
     # ================= INSTALLATION DES LOGICIELS (les unes apres les autres) =================
     # winget : les anciennes versions du script le supprimaient, on s'assure qu'il est present
     @{ Name = "Ensure winget (App Installer)"; Script = {
