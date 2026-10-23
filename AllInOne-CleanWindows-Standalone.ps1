@@ -1708,46 +1708,6 @@ $Tasks = @(
         } catch { L ERROR "Afterburner / RTSS failed: $($_.Exception.Message)" }
     } },
 
-    # Discord : configuration performance
-    @{ Name = "Discord - Performance Config"; Script = {
-        param($tempDir)
-        try {
-            if (-not (Test-Path -LiteralPath "$env:LOCALAPPDATA\Discord")) { P 100 "Not installed"; L WARNING "Discord not installed - config skipped"; return }
-            P 0 "Closing Discord"
-            Stop-Process -Name 'Discord' -Force -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 2
-
-            $dir  = Join-Path $env:APPDATA 'discord'
-            $file = Join-Path $dir 'settings.json'
-            if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-
-            P 30 "Reading settings.json"
-            $obj = $null
-            if (Test-Path -LiteralPath $file) {
-                try { $obj = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json } catch { L WARNING "settings.json unreadable - recreated" }
-            }
-            if (-not $obj) { $obj = [pscustomobject]@{} }
-
-            $want = [ordered]@{
-                'enableHardwareAcceleration' = $false   # moins de charge GPU/overlay pendant les jeux
-                'OPEN_ON_STARTUP'            = $false   # pas de lancement au demarrage de Windows
-                'MINIMIZE_TO_TRAY'           = $false   # fermer = quitter (aucun process en arriere-plan)
-                'SKIP_HOST_UPDATE'           = $true
-            }
-            foreach ($k in $want.Keys) {
-                Add-Member -InputObject $obj -MemberType NoteProperty -Name $k -Value $want[$k] -Force
-                L INFO "Discord setting: $k = $($want[$k])"
-            }
-            P 60 "Writing settings.json"
-            [IO.File]::WriteAllText($file, ($obj | ConvertTo-Json -Depth 10), (New-Object Text.UTF8Encoding($false)))
-
-            P 80 "Removing startup entry"
-            try { Remove-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Discord' -ErrorAction Stop } catch { }
-            P 100 "Done"
-            L SUCCESS "Discord configured (overlay must be disabled manually in Discord > Game Overlay)"
-        } catch { L ERROR "Discord config failed: $($_.Exception.Message)" }
-    } },
-
     # Runtimes utiles aux jeux (anciens VC++ + .NET) : evite les erreurs "DLL manquante" au lancement de vieux jeux
     @{ Name = "Gaming Runtimes (legacy VC++ + .NET)"; Timeout = 600; Script = {
         param($tempDir)
