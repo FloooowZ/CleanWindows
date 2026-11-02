@@ -396,7 +396,7 @@ function Invoke-Task {
     if (-not $Timeout) { $Timeout = $TaskTimeoutSeconds }
 
     Write-Log ">>> [$Index/$Total] $Name (timeout: ${Timeout}s)" "INFO"
-    $job = Start-Job -InitializationScript $InitLoader -ScriptBlock $Script -ArgumentList $tempDir, $PSCommandPath, $CleanUserDownloads
+    $job = Start-Job -InitializationScript $InitLoader -ScriptBlock $Script -ArgumentList $tempDir, $PSCommandPath, $CleanUserDownloads, $RunComponentCleanup
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $pct = 0; $msg = "Starting"; $procId = $null
     $hadError = $false; $hadWarn = $false; $timedOut = $false; $skipped = $false
@@ -2015,17 +2015,17 @@ $Tasks = @(
                 'MixedRealityOpenXRSvc', 'perceptionsimulation', 'spectrum', 'SharedRealitySvc', 'WalletService', 'SEMgrSvc',
                 # Network / sharing / remote access
                 'LanmanServer', 'lmhosts', 'lltdsvc', 'upnphost', 'SharedAccess', 'icssvc', 'WinRM', 'WebClient', 'RpcLocator',
-                'SessionEnv', 'TermService', 'UmRdpService', 'RemoteRegistry', 'WMPNetworkSvc', 'WFDSConMgrSvc', 'TapiSrv',
+                'SessionEnv', 'TermService', 'UmRdpService', 'RemoteRegistry', 'WMPNetworkSvc', 'TapiSrv',
                 'PNRPsvc', 'p2psvc', 'p2pimsvc', 'PNRPAutoReg', 'CscService', 'workfolderssvc',
                 # Smart cards / enterprise / misc
                 'SCardSvr', 'ScDeviceEnum', 'SCPolicySvc', 'CertPropSvc', 'EntAppSvc', 'AppVClient', 'UevAgentService', 'embeddedmode',
-                'WpcMonSvc', 'Wecsvc', 'wisvc', 'RetailDemo', 'TrkWks', 'CDPSvc', 'AJRouter', 'ALG', 'SDRSVC',
+                'WpcMonSvc', 'Wecsvc', 'wisvc', 'RetailDemo', 'TrkWks', 'AJRouter', 'ALG', 'SDRSVC',
                 # Xbox (already uninstalled by the Xbox task, make sure they stay off)
                 'XblAuthManager', 'XblGameSave', 'XboxGipSvc', 'XboxNetApiSvc'
             )
             # "Per-user" services: disable the template (takes effect at next sign-in)
-            $perUser = @('OneSyncSvc', 'UserDataSvc', 'UnistoreSvc', 'PimIndexMaintenanceSvc', 'MessagingService', 'CDPUserSvc',
-                         'DevicesFlowUserSvc', 'PrintWorkflowUserSvc', 'BcastDVRUserService', 'AarSvc', 'webthreatdefusersvc')
+            $perUser = @('OneSyncSvc', 'UserDataSvc', 'UnistoreSvc', 'PimIndexMaintenanceSvc', 'MessagingService',
+                         'PrintWorkflowUserSvc', 'BcastDVRUserService', 'AarSvc', 'webthreatdefusersvc')
 
             # SysMain (Superfetch): useless on SSD, kept on HDD
             $ssd = $false
@@ -2036,8 +2036,21 @@ $Tasks = @(
             } catch { }
             if ($ssd) { $services += 'SysMain'; L INFO "System drive is an SSD: SysMain (Superfetch) disabled" } else { L INFO "System drive type not SSD/unknown: SysMain left as is" }
 
-            $backup = New-Object 'System.Collections.Generic.List[string]'
-            $backup.Add('# Restores the services changed by All-In-One Clean Windows (run as administrator, then reboot)')
+            # Original Start values are kept in a JSON baseline: recorded on the first run only, never overwritten,
+            # so the restore script stays complete even after re-runs.
+            $docs = [Environment]::GetFolderPath('MyDocuments')
+            $baseFile = Join-Path $docs 'CleanWindows-ServicesBaseline.json'
+            $restore = Join-Path $docs 'CleanWindows-RestoreServices.ps1'
+            $base = [ordered]@{}
+            if (Test-Path -LiteralPath $baseFile) {
+                try { (Get-Content -LiteralPath $baseFile -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $base[$_.Name] = [int]$_.Value } } catch { L WARNING "Could not read $baseFile" }
+            }
+            # Salvage values from a restore script written by an older version
+            if (Test-Path -LiteralPath $restore) {
+                foreach ($line in @(Get-Content -LiteralPath $restore -ErrorAction SilentlyContinue)) {
+                    if ($line -match "Services\\([^'\\]+)' -Name 'Start' -Value (\d+)") { if (-not $base.Contains($Matches[1])) { $base[$Matches[1]] = [int]$Matches[2] } }
+                }
+            }
             $changed = 0; $absent = 0; $already = 0; $failed = 0
             $all = @($services) + @($perUser)
             $i = 0
@@ -2048,13 +2061,14 @@ $Tasks = @(
                 else {
                     $orig = $null
                     try { $orig = (Get-ItemProperty -LiteralPath $k -Name 'Start' -ErrorAction Stop).Start } catch { }
+                    if ($null -ne $orig -and -not $base.Contains($s)) { $base[$s] = [int]$orig }
                     if ($orig -eq 4 -or $null -eq $orig) { $already++ }
                     else {
                         if ($perUser -notcontains $s) { Invoke-Native sc.exe @('stop', $s) | Out-Null }
                         $ok = $false
                         try { Set-Reg $k 'Start' 4; $ok = $true } catch { }
                         if (-not $ok) { $r = Invoke-Native sc.exe @('config', $s, 'start=', 'disabled'); if ($r.Code -eq 0) { $ok = $true } }
-                        if ($ok) { $changed++; $backup.Add("Set-ItemProperty -LiteralPath '$k' -Name 'Start' -Value $orig"); L INFO "Service disabled: $s (was Start=$orig)" }
+                        if ($ok) { $changed++; L INFO "Service disabled: $s (was Start=$orig)" }
                         else { $failed++; L INFO "Service protected, not changed: $s" }
                     }
                 }
@@ -2067,13 +2081,33 @@ $Tasks = @(
             if (Test-Path -LiteralPath $ws) {
                 try {
                     $o = (Get-ItemProperty -LiteralPath $ws -Name 'Start').Start
-                    if ($o -eq 2) { Set-Reg $ws 'Start' 3; Set-Reg $ws 'DelayedAutostart' 0; $backup.Add("Set-ItemProperty -LiteralPath '$ws' -Name 'Start' -Value 2"); L INFO "WSearch set to manual" }
+                    if (-not $base.Contains('WSearch')) { $base['WSearch'] = [int]$o }
+                    if ($o -eq 2) { Set-Reg $ws 'Start' 3; Set-Reg $ws 'DelayedAutostart' 0; L INFO "WSearch set to manual" }
                 } catch { }
             }
 
-            # Restore script
-            $restore = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'CleanWindows-RestoreServices.ps1'
-            try { Set-Content -LiteralPath $restore -Value $backup -Encoding UTF8; L INFO "Restore script written: $restore" } catch { L WARNING "Could not write the restore script" }
+            # Re-enable services needed by Win+P / Cast / Nearby sharing if an older version disabled them
+            P 93 "Re-enabling Win+P / Cast services"
+            foreach ($fix in @(@('CDPSvc', 2), @('CDPUserSvc', 2), @('DevicesFlowUserSvc', 3), @('WFDSConMgrSvc', 3))) {
+                $fk = "HKLM:\SYSTEM\CurrentControlSet\Services\$($fix[0])"
+                if (Test-Path -LiteralPath $fk) {
+                    try {
+                        if ((Get-ItemProperty -LiteralPath $fk -Name 'Start' -ErrorAction Stop).Start -eq 4) {
+                            Set-Reg $fk 'Start' $fix[1]; L INFO "Service re-enabled (Win+P/Cast): $($fix[0]) -> Start=$($fix[1])"
+                        }
+                    } catch { L INFO "Could not re-enable $($fix[0])" }
+                }
+            }
+
+            # Baseline + restore script (generated from the merged baseline, never emptied by a re-run)
+            try { ($base | ConvertTo-Json) | Set-Content -LiteralPath $baseFile -Encoding UTF8 } catch { L WARNING "Could not write $baseFile" }
+            $backup = New-Object 'System.Collections.Generic.List[string]'
+            $backup.Add('# Restores the services changed by All-In-One Clean Windows (run as administrator, then reboot)')
+            foreach ($name in $base.Keys) {
+                if ($base[$name] -eq 4) { continue }
+                $backup.Add("Set-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\$name' -Name 'Start' -Value $($base[$name])")
+            }
+            try { Set-Content -LiteralPath $restore -Value $backup -Encoding UTF8; L INFO "Restore script written: $restore ($($backup.Count - 1) service(s))" } catch { L WARNING "Could not write the restore script" }
 
             P 100 "Done"
             L SUCCESS "Services: $changed disabled, $already already off, $absent not present, $failed protected. Restore script: Documents\CleanWindows-RestoreServices.ps1. Reboot to apply fully"
@@ -2496,14 +2530,24 @@ $Tasks = @(
                 try { $dl = [Environment]::ExpandEnvironmentVariables((Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders' -ErrorAction Stop).'{374DE290-123F-4565-9164-6711B66C4B6D}') } catch { }
                 if (-not $dl) { $dl = Join-Path $env:USERPROFILE 'Downloads' }
                 $n = 0
+                $scriptDir = $null
+                if ($selfPath) { try { $scriptDir = (Split-Path -Parent $selfPath).TrimEnd('\') } catch { } }
+                Add-Type -AssemblyName Microsoft.VisualBasic
+                $fs = [Microsoft.VisualBasic.FileIO.FileSystem]
+                $ui = [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs
+                $bin = [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin
                 if (Test-Path -LiteralPath $dl) {
                     foreach ($item in @(Get-ChildItem -LiteralPath $dl -Force -ErrorAction SilentlyContinue)) {
-                        # Never delete the script itself or its launcher
-                        if ($item.FullName -eq $selfPath -or $item.Name -like 'AllInOne*' -or $item.Name -like 'Launch-AllInOne*') { continue }
-                        Remove-Item -LiteralPath $item.FullName -Recurse -Force -ErrorAction SilentlyContinue
-                        $n++
+                        # Never delete the script, its launchers or the folder the script runs from
+                        if ($item.FullName -eq $selfPath -or $item.Name -like 'AllInOne*' -or $item.Name -like 'Launch-*.bat' -or $item.Name -like '*CleanWindows*') { continue }
+                        if ($scriptDir -and ($scriptDir -eq $item.FullName.TrimEnd('\') -or $scriptDir.StartsWith($item.FullName.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase))) { continue }
+                        # Sent to the Recycle Bin (emptied above, before this step), so everything stays recoverable
+                        try {
+                            if ($item.PSIsContainer) { $fs::DeleteDirectory($item.FullName, $ui, $bin) } else { $fs::DeleteFile($item.FullName, $ui, $bin) }
+                            $n++
+                        } catch { L INFO "Could not move to Recycle Bin: $($item.Name)" }
                     }
-                    L INFO "Downloads cleaned: $n item(s) removed from $dl"
+                    L INFO "Downloads cleaned: $n item(s) moved to the Recycle Bin from $dl"
                 }
             } else { L INFO "Downloads folder cleanup disabled (CleanUserDownloads = false)" }
 

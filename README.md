@@ -114,6 +114,7 @@ No questions are asked. The NVIDIA tasks are skipped if there is no NVIDIA card.
 | `Documents\CLEANWINDOWSLOG.TXT` | Full log |
 | `Documents\CleanWindows-Baseline.json` | Initial measurement (kept across re-runs) |
 | `Documents\CleanWindows-RestoreServices.ps1` | Restores the disabled services |
+| `Documents\CleanWindows-ServicesBaseline.json` | Original service start values (recorded on the first run, kept across re-runs) |
 | `Documents\CleanWindows-RemovedGhostDevices.csv` | Removed ghost devices |
 
 On a **laptop**, the script leaves battery settings, hibernation and device power saving unchanged.
@@ -130,5 +131,5 @@ On a **laptop**, the script leaves battery settings, hibernation and device powe
 | Variable | Purpose |
 |---|---|
 | `$TaskTimeoutSeconds` | Maximum time per task (300 s) |
-| `$CleanUserDownloads` | Also empties the Downloads folder at the end |
+| `$CleanUserDownloads` | Also cleans the Downloads folder at the end: items are moved to the **Recycle Bin** (recoverable); the script, `Launch-*.bat`, `*CleanWindows*` / `AllInOne*` files and the script's folder are kept |
 | `$RunComponentCleanup` | DISM component store cleanup (slow) |
