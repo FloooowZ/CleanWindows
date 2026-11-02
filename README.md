@@ -105,6 +105,32 @@ If an NVIDIA card is detected, the script:
 
 No questions are asked. The NVIDIA tasks are skipped if there is no NVIDIA card.
 
+## Power plan
+
+The script keeps **one single plan**: *Gaming - Ultimate Performance* (a copy of Ultimate Performance, or High
+Performance if Ultimate is not available). It is activated, then **every other plan is deleted**.
+
+| Setting (plugged in) | Value |
+|---|---|
+| CPU minimum / maximum state | 5% / 100% (idle cores can clock down; good for hybrid P/E CPUs such as the i7 13700K) |
+| Core parking | Ultimate Performance default (not forced) |
+| CPU boost mode / energy preference | Aggressive / performance |
+| PCIe link state power management | Off |
+| USB selective suspend / USB 3 link power | Off |
+| Turn off hard disk / sleep / hybrid sleep | Never / never / off |
+| Wireless adapter | Maximum performance |
+
+On a desktop the same values are also written for battery (DC). Re-running it only changes values that differ.
+
+## Re-running the script (check before apply)
+
+Every task first checks the current state and only writes what is different: registry values (value and type),
+services, scheduled tasks, optional features, boot settings, Defender settings and exclusions, network adapter
+properties and bindings, power plan, memory settings, APPX packages and installed programs (uninstall registry,
+known files, APPX, then `winget list`). The Start menu pins are reset only once (marker
+`HKCU:\Software\CleanWindows\StartPinsReset`). The summary shows, per task, how many items were **changed** and
+how many were **already set**; a task with nothing to change is shown as `ALREADY APPLIED`.
+
 ## Generated reports
 
 | File | Contents |

@@ -142,17 +142,73 @@ $Init = {
     function P { param([int]$Pct, [string]$Msg) "P|$Pct|$Msg" }
     function L { param([string]$Level, [string]$Msg) "L|$Level|$Msg" }
 
+    # Change tracking: each task reports "X changed, Y already set" (read by Invoke-Task through a C| line)
+    $global:CW_Changed = 0; $global:CW_Same = 0
+    function Add-Changed { param([int]$N = 1) $global:CW_Changed += $N }
+    function Add-Same    { param([int]$N = 1) $global:CW_Same += $N }
+
+    # Normalizes a registry value for comparison (DWord/QWord as unsigned, arrays joined)
+    function ConvertTo-RegCompare {
+        param($Value, [string]$Type)
+        if ($null -eq $Value) { return $null }
+        switch ($Type) {
+            'DWord'       { return [string]([int64]$Value -band 0xFFFFFFFFL) }
+            'QWord'       { return [string]([decimal]$Value) }
+            'Binary'      { return (@($Value) | ForEach-Object { ([byte]$_).ToString('X2') }) -join '' }
+            'MultiString' { return (@($Value) -join "`n") }
+            default       { return [string]$Value }
+        }
+    }
+
+    # Writes a registry value ONLY if it differs (value or type). Counts changed / already set.
     function Set-Reg {
         param($Path, $Name, $Value, $Type = 'DWord')
-        if (-not (Test-Path -LiteralPath $Path)) { New-Item -Path $Path -Force | Out-Null }
+        if (Test-Path -LiteralPath $Path) {
+            try {
+                $key = Get-Item -LiteralPath $Path -ErrorAction Stop
+                $vn = if ($Name -eq '(default)') { '' } else { $Name }
+                if (@($key.GetValueNames()) -contains $vn) {
+                    $kind = [string]$key.GetValueKind($vn)
+                    $cur = $key.GetValue($vn, $null, 'DoNotExpandEnvironmentNames')
+                    if ($kind -eq $Type -and (ConvertTo-RegCompare $cur $Type) -ceq (ConvertTo-RegCompare $Value $Type)) { Add-Same; return }
+                }
+            } catch { }
+        } else { New-Item -Path $Path -Force | Out-Null }
         Set-ItemProperty -LiteralPath $Path -Name $Name -Value $Value -Type $Type -Force
+        Add-Changed
     }
 
     function Remove-Key {
         param($Path)
         if (Test-Path -LiteralPath $Path) {
             Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
+            Add-Changed
+        } else { Add-Same }
+    }
+
+    # Is a program installed? Checks (in order) known files, the uninstall registry (HKLM, WOW6432Node, HKCU),
+    # APPX packages, then "winget list" as a last resort. Returns $true / $false.
+    function Test-AppInstalled {
+        param([string]$NameRx = '', [string[]]$Paths = @(), [string]$Appx = '', [string]$WingetId = '')
+        foreach ($pa in $Paths) { if ($pa -and (Test-Path -Path $pa)) { return $true } }
+        if ($NameRx) {
+            foreach ($u in 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall') {
+                foreach ($e in @(Get-ChildItem -LiteralPath $u -ErrorAction SilentlyContinue)) {
+                    $dn = $null
+                    try { $dn = [string]$e.GetValue('DisplayName') } catch { }
+                    if ($dn -and $dn -match $NameRx) { return $true }
+                }
+            }
         }
+        if ($Appx -and (Get-AppxPackage -AllUsers -Name $Appx -ErrorAction SilentlyContinue)) { return $true }
+        if ($WingetId) {
+            $w = Get-WingetPath
+            if ($w) {
+                $r = Invoke-Native $w @('list', '--id', $WingetId, '--exact', '--accept-source-agreements', '--disable-interactivity')
+                if ($r.Code -eq 0 -and $r.Out -match [regex]::Escape($WingetId)) { return $true }
+            }
+        }
+        return $false
     }
 
     # Downloads from a list of URLs (fallback sources) - throws if all of them fail
@@ -182,12 +238,16 @@ $Init = {
     # Adds Windows Defender exclusions (paths / processes)
     function Add-DefExclusion {
         param([string[]]$Paths = @(), [string[]]$Processes = @())
+        $curEx = $null
+        try { $curEx = Get-MpPreference -ErrorAction Stop } catch { }
         foreach ($x in $Paths) {
-            try { Add-MpPreference -ExclusionPath $x -ErrorAction Stop; L INFO "Defender exclusion added (path): $x" }
+            if ($curEx -and @($curEx.ExclusionPath) -contains $x) { Add-Same; continue }
+            try { Add-MpPreference -ExclusionPath $x -ErrorAction Stop; Add-Changed; L INFO "Defender exclusion added (path): $x" }
             catch { L WARNING "Defender exclusion NOT added for $x : $($_.Exception.Message.Split("`n")[0])" }
         }
         foreach ($x in $Processes) {
-            try { Add-MpPreference -ExclusionProcess $x -ErrorAction Stop; L INFO "Defender exclusion added (process): $x" }
+            if ($curEx -and @($curEx.ExclusionProcess) -contains $x) { Add-Same; continue }
+            try { Add-MpPreference -ExclusionProcess $x -ErrorAction Stop; Add-Changed; L INFO "Defender exclusion added (process): $x" }
             catch { L WARNING "Defender exclusion NOT added for $x : $($_.Exception.Message.Split("`n")[0])" }
         }
     }
@@ -239,7 +299,10 @@ $Init = {
         Invoke-Proc $w $a '' $From $To "winget install $Id" 45
         $code = $global:LastExitCode2
         # 0 = OK ; -1978335135 = already installed; -1978335189 = nothing to update
-        if ($code -in 0, -1978335135, -1978335189) { L INFO "winget: $Id OK (code $code)" }
+        if ($code -in 0, -1978335135, -1978335189) {
+            if ($code -eq 0) { Add-Changed } else { Add-Same }
+            L INFO "winget: $Id OK (code $code)"
+        }
         else { throw "winget install $Id failed (exit code $code)" }
     }
 
@@ -297,7 +360,7 @@ $Init = {
         $targets = @($all | Where-Object { $n = $_.Name; @($Patterns | Where-Object { $n -like $_ }).Count -gt 0 })
         $provTargets = @($prov | Where-Object { $n = $_.DisplayName; @($Patterns | Where-Object { $n -like $_ }).Count -gt 0 })
         $total = $targets.Count + $provTargets.Count
-        if ($total -eq 0) { L INFO "No matching app found (already clean)"; P $To "Nothing to remove"; return }
+        if ($total -eq 0) { Add-Same; L INFO "No matching app found (already removed)"; P $To "Nothing to remove"; return }
         $i = 0
         # 1) Remove the provisioning first: once the installed package is removed, Windows can no longer find its files
         #    and Remove-AppxProvisionedPackage fails with "path not found".
@@ -306,10 +369,11 @@ $Init = {
             P ($From + [int](($To - $From) * $i / $total)) "Deprovisioning $($pp.DisplayName)"
             try {
                 Remove-AppxProvisionedPackage -Online -PackageName $pp.PackageName -ErrorAction Stop | Out-Null
+                Add-Changed
                 L INFO "Deprovisioned: $($pp.DisplayName)"
             } catch {
                 $msg = $_.Exception.Message.Split("`n")[0]
-                if ($msg -match 'introuvable|not found|cannot find|0x80070002|0x80070003') { L INFO "Already deprovisioned: $($pp.DisplayName)" }
+                if ($msg -match 'introuvable|not found|cannot find|0x80070002|0x80070003') { Add-Same; L INFO "Already deprovisioned: $($pp.DisplayName)" }
                 else { L WARNING "Could not deprovision $($pp.DisplayName): $msg" }
             }
         }
@@ -320,6 +384,7 @@ $Init = {
             if ($pkg.NonRemovable) { L INFO "System package, skipped: $($pkg.Name)"; continue }
             try {
                 Remove-AppxPackage -Package $pkg.PackageFullName -AllUsers -ErrorAction Stop | Out-Null
+                Add-Changed
                 L INFO "Removed: $($pkg.Name)"
             } catch { L WARNING "Could not remove $($pkg.Name): $($_.Exception.Message.Split("`n")[0])" }
         }
@@ -372,6 +437,7 @@ $Init = {
         $code = $p.ExitCode
         # 0 = OK, 3010/1641 = OK (reboot required), 1638 = already installed (newer version)
         if ($code -in 0, 1638, 1641, 3010) {
+            if ($code -eq 1638) { Add-Same } else { Add-Changed }
             L INFO "Installer finished: $(Split-Path $Path -Leaf) (ExitCode: $code)"
         } else {
             throw "Installer $(Split-Path $Path -Leaf) failed (ExitCode: $code)"
@@ -396,7 +462,15 @@ function Invoke-Task {
     if (-not $Timeout) { $Timeout = $TaskTimeoutSeconds }
 
     Write-Log ">>> [$Index/$Total] $Name (timeout: ${Timeout}s)" "INFO"
-    $job = Start-Job -InitializationScript $InitLoader -ScriptBlock $Script -ArgumentList $tempDir, $PSCommandPath, $CleanUserDownloads, $RunComponentCleanup
+    # Wrapper: runs the task, then reports its change counters ("C|changed|already set")
+    $wrapper = {
+        param($a1, $a2, $a3, $a4, $body)
+        $global:CW_Changed = 0; $global:CW_Same = 0
+        & ([scriptblock]::Create($body)) $a1 $a2 $a3 $a4
+        "C|$($global:CW_Changed)|$($global:CW_Same)"
+    }
+    $job = Start-Job -InitializationScript $InitLoader -ScriptBlock $wrapper -ArgumentList $tempDir, $PSCommandPath, $CleanUserDownloads, $RunComponentCleanup, $Script.ToString()
+    $nChanged = 0; $nSame = 0
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $pct = 0; $msg = "Starting"; $procId = $null
     $hadError = $false; $hadWarn = $false; $timedOut = $false; $skipped = $false
@@ -411,7 +485,7 @@ function Invoke-Task {
         foreach ($line in $received) {
             if ($line -isnot [string]) { continue }
             $parts = $line.Split('|', 3)
-            if ($parts[0] -notin 'P', 'L', 'PID' -and $stray -lt 5 -and $line.Trim()) { $stray++; Write-Log "Unexpected task output: $line" "DEBUG" }
+            if ($parts[0] -notin 'P', 'L', 'PID', 'C' -and $stray -lt 5 -and $line.Trim()) { $stray++; Write-Log "Unexpected task output: $line" "DEBUG" }
             switch ($parts[0]) {
                 'P'   { $pct = [int]$parts[1]; $msg = $parts[2] }
                 'L'   {
@@ -422,6 +496,7 @@ function Invoke-Task {
                     if ($lvl -eq 'WARNING') { $hadWarn = $true }
                 }
                 'PID' { $procId = [int]$parts[1] }
+                'C'   { $nChanged = [int]$parts[1]; $nSame = [int]$parts[2] }
             }
         }
 
@@ -453,14 +528,16 @@ function Invoke-Task {
     elseif ($hadError)  { $status = "ERROR (see log)";    $color = "Red";    $final = $pct }
     elseif ($hadWarn)   { $status = "OK (warnings)";      $color = "Yellow"; $final = 100 }
     elseif ($skipped)   { $status = "SKIPPED (n/a)";      $color = "DarkGray"; $final = 100 }
+    elseif ($nChanged -eq 0 -and $nSame -gt 0) { $status = "ALREADY APPLIED"; $color = "DarkGreen"; $final = 100 }
     else                { $status = "OK";                 $color = "Green";  $final = 100 }
+    if ($nChanged + $nSame -gt 0) { Write-Log "$Name : $nChanged changed, $nSame already set" "INFO" }
 
     $w = 20; $n = [int]($w * $final / 100)
     $bar = "[" + ("#" * $n) + ("-" * ($w - $n)) + "]"
     Write-Host ("{0} {1,3}%  {2} - {3}" -f $bar, $final, $Name, $status) -ForegroundColor $color
     $secs = [int]$sw.Elapsed.TotalSeconds
     Write-Log "<<< $Name : $status (${secs}s)" $(if ($timedOut -or $hadError) { "WARNING" } else { "SUCCESS" })
-    $script:Summary += [pscustomobject]@{ Name = $Name; Status = $status; Seconds = $secs }
+    $script:Summary += [pscustomobject]@{ Name = $Name; Status = $status; Seconds = $secs; Changed = $nChanged; Same = $nSame }
 }
 
 # =============================================================================
@@ -493,6 +570,7 @@ $Tasks = @(
                 if ($null -ne $old) { Set-Reg $key 'SystemRestorePointCreationFrequency' $old }
                 else { Remove-ItemProperty -LiteralPath $key -Name 'SystemRestorePointCreationFrequency' -ErrorAction SilentlyContinue }
             } catch { }
+            $global:CW_Changed = 0; $global:CW_Same = 0
         }
     } },
 
@@ -500,6 +578,10 @@ $Tasks = @(
     @{ Name = "Visual C++ Redistributable x64"; Script = {
         param($tempDir)
         try {
+            if (Test-AppInstalled -NameRx 'Microsoft Visual C\+\+ 20(15|17|19|22).*Redistributable \(x64\)' -Paths @() ) {
+                $rk = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64' -ErrorAction SilentlyContinue
+                Add-Same; P 100 "Already installed"; Add-Same; L SUCCESS "VC++ x64 already installed ($($rk.Version)) - skipped"; return
+            }
             $f = Join-Path $tempDir "vc_redist_x64.exe"
             P 0 "Downloading"
             Get-File "https://aka.ms/vc14/vc_redist.x64.exe" $f 0 50
@@ -512,6 +594,10 @@ $Tasks = @(
     @{ Name = "Visual C++ Redistributable x86"; Script = {
         param($tempDir)
         try {
+            if (Test-AppInstalled -NameRx 'Microsoft Visual C\+\+ 20(15|17|19|22).*Redistributable \(x86\)') {
+                $rk = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x86' -ErrorAction SilentlyContinue
+                Add-Same; P 100 "Already installed"; Add-Same; L SUCCESS "VC++ x86 already installed ($($rk.Version)) - skipped"; return
+            }
             $f = Join-Path $tempDir "vc_redist_x86.exe"
             P 0 "Downloading"
             Get-File "https://aka.ms/vc14/vc_redist.x86.exe" $f 0 50
@@ -524,6 +610,9 @@ $Tasks = @(
     @{ Name = "DirectX End-User Runtime"; Script = {
         param($tempDir)
         try {
+            # Legacy DirectX 9-11 runtime (d3dx9_43 / xinput1_3 / d3dcompiler_43) already present in both System32 and SysWOW64?
+            $dxFiles = foreach ($d in "$env:SystemRoot\System32", "$env:SystemRoot\SysWOW64") { foreach ($dll in 'd3dx9_43.dll', 'xinput1_3.dll', 'd3dcompiler_43.dll') { Join-Path $d $dll } }
+            if (@($dxFiles | Where-Object { -not (Test-Path -LiteralPath $_) }).Count -eq 0) { Add-Same; P 100 "Already installed"; Add-Same; L SUCCESS "DirectX End-User Runtime already installed - skipped"; return }
             $f = Join-Path $tempDir "dxwebsetup.exe"
             P 0 "Downloading"
             Get-File "https://download.microsoft.com/download/1/7/1/1718CCC4-6315-4D8E-9543-8E28A4E18C4C/dxwebsetup.exe" $f 0 40
@@ -598,6 +687,7 @@ $Tasks = @(
                 if ($f -and $f.State -eq 'Enabled') {
                     P 80 "Removing Windows Recall"
                     Disable-WindowsOptionalFeature -Online -FeatureName Recall -NoRestart -ErrorAction Stop | Out-Null
+                    Add-Changed
                     L INFO "Windows Recall feature disabled"
                 } else { L INFO "Windows Recall feature not enabled / not present" }
             } catch { L INFO "Recall feature not available on this Windows build" }
@@ -848,59 +938,85 @@ $Tasks = @(
                 }
                 if (-not $guid) { throw "Unable to create a power plan (powercfg failed)" }
                 Invoke-Native powercfg.exe @('-changename', $guid, $name, 'Maximum performance plan for gaming') | Out-Null
+                Add-Changed
             }
 
-            # Settings: subgroup, setting, value, label
-            $PROC = '54533251-82be-4824-96c1-47b60b740d00'
+            # Settings (powercfg aliases, GUID when no alias): subgroup, setting, value, label
+            # i7 13700K (hybrid P/E cores): CPU min 5% so idle cores clock down, core parking left at the
+            # Ultimate Performance default (no forcing), boost aggressive, no link/USB/disk power saving, no sleep on AC.
             $settings = @(
-                @($PROC, '893dee8e-2bef-41e0-89c6-b55d0929964c', 100, 'CPU minimum state 100%'),
-                @($PROC, 'bc5038f7-23e0-4960-96da-33abaf5935ec', 100, 'CPU maximum state 100%'),
-                @($PROC, '0cc5b647-c1df-4637-891a-dec35c318583', 100, 'Core parking disabled'),
-                @($PROC, 'be337238-0d82-4146-a960-4f3749d470c7', 2,   'CPU boost mode: aggressive'),
-                @($PROC, '36687f9e-e3a5-4dbf-b1dc-15eb381c6863', 0,   'CPU energy performance preference: performance'),
-                @($PROC, '45bcc044-d885-43e2-8605-ee0ec6e96b59', 100, 'CPU boost policy 100%'),
-                @($PROC, '94d3a615-a899-4ac5-ae2b-e4d8f634367f', 1,   'Cooling policy: active'),
-                @('501a4d13-42af-4429-9fd1-a8218c268e20', 'ee12f906-d277-404b-b6da-e5fa1a576df5', 0, 'PCIe link state power management: off'),
+                @('SUB_PROCESSOR', 'PROCTHROTTLEMIN', 5,   'CPU minimum state 5%'),
+                @('SUB_PROCESSOR', 'PROCTHROTTLEMAX', 100, 'CPU maximum state 100%'),
+                @('SUB_PROCESSOR', 'PERFBOOSTMODE',   2,   'CPU boost mode: aggressive'),
+                @('SUB_PROCESSOR', 'PERFEPP',         0,   'CPU energy performance preference: performance'),
+                @('SUB_PROCESSOR', 'PERFBOOSTPOL',    100, 'CPU boost policy 100%'),
+                @('SUB_PROCESSOR', 'SYSCOOLPOL',      1,   'Cooling policy: active'),
+                @('SUB_PCIEXPRESS', 'ASPM',           0,   'PCIe link state power management: off'),
                 @('2a737441-1930-4402-8d77-b2bebba308a3', '48e6b7a6-50f5-4782-a5d4-53bb8f07e226', 0, 'USB selective suspend: disabled'),
                 @('2a737441-1930-4402-8d77-b2bebba308a3', 'd4e98f31-5ffe-4ce1-be31-1b38b384c009', 0, 'USB 3 link power management: off'),
-                @('0012ee47-9041-4b5d-9b77-535fba8b1442', '6738e2c4-e8a5-4a42-b16a-e040e769756e', 0, 'Hard disk never turns off'),
-                @('238c9fa8-0aad-41ed-83f4-97be242c8f20', '29f6c1db-86da-48c5-9fdb-f2b67b1f44da', 0, 'Sleep: never'),
-                @('238c9fa8-0aad-41ed-83f4-97be242c8f20', '94ac6d29-73ce-41a6-809f-6363ba21b47e', 0, 'Hybrid sleep: off'),
+                @('SUB_DISK', 'DISKIDLE',             0,   'Hard disk never turns off'),
+                @('SUB_SLEEP', 'STANDBYIDLE',         0,   'Sleep: never'),
+                @('SUB_SLEEP', 'HYBRIDSLEEP',         0,   'Hybrid sleep: off'),
                 @('19cbb8fa-5279-450e-9fac-8a3d5fedd0c1', '12bbebe6-58d6-4636-95bb-3217ef867c1a', 0, 'Wireless adapter: max performance')
             )
+            # Current AC/DC values: the last two hex values of "powercfg /q" (language-independent)
+            function Get-PowerValue {
+                param($Plan, $Sub, $Setting)
+                $q = Invoke-Native powercfg.exe @('/q', $Plan, $Sub, $Setting)
+                if ($q.Code -ne 0) { return $null }
+                $hex = @([regex]::Matches($q.Out, '0x([0-9a-fA-F]{8})') | ForEach-Object { [Convert]::ToInt64($_.Groups[1].Value, 16) })
+                if ($hex.Count -lt 2) { return $null }
+                return @($hex[$hex.Count - 2], $hex[$hex.Count - 1])
+            }
             $laptop = Test-Laptop
             if ($laptop) { L INFO "Laptop detected: battery (DC) values left at their defaults, only plugged-in (AC) values are applied" }
+            $planChanged = 0; $planSame = 0
             $i = 0
             foreach ($s in $settings) {
                 $i++
                 P (15 + [int](75 * $i / $settings.Count)) $s[3]
-                $ac = Invoke-Native powercfg.exe @('-setacvalueindex', $guid, $s[0], $s[1], "$($s[2])")
-                $dc = if ($laptop) { [pscustomobject]@{ Code = 1 } } else { Invoke-Native powercfg.exe @('-setdcvalueindex', $guid, $s[0], $s[1], "$($s[2])") }
-                if ($ac.Code -ne 0 -and $dc.Code -ne 0) { L INFO "Setting not supported on this PC (skipped): $($s[3])" }
-                else { L INFO "Applied: $($s[3])" }
+                $cur = Get-PowerValue $guid $s[0] $s[1]
+                if ($null -eq $cur) { L INFO "Setting not supported on this PC (skipped): $($s[3])"; continue }
+                $needAc = ($cur[0] -ne $s[2]); $needDc = ((-not $laptop) -and $cur[1] -ne $s[2])
+                if (-not $needAc -and -not $needDc) { $planSame++; continue }
+                $ac = if ($needAc) { Invoke-Native powercfg.exe @('-setacvalueindex', $guid, $s[0], $s[1], "$($s[2])") } else { [pscustomobject]@{ Code = 0 } }
+                $dc = if ($needDc) { Invoke-Native powercfg.exe @('-setdcvalueindex', $guid, $s[0], $s[1], "$($s[2])") } else { [pscustomobject]@{ Code = 0 } }
+                if ($ac.Code -ne 0 -or $dc.Code -ne 0) { L WARNING "Could not apply: $($s[3])" }
+                else { $planChanged++; L INFO "Applied: $($s[3])" }
+            }
+            Add-Changed $planChanged; Add-Same $planSame
+
+            # Activate (also re-applied when a value of the active plan changed, so it takes effect now)
+            P 92 "Activating plan"
+            $active = (Invoke-Native powercfg.exe @('/getactivescheme')).Out
+            if ($active -match $guidRx -and $Matches[1] -ieq $guid -and $planChanged -eq 0) { Add-Same }
+            else {
+                $act = Invoke-Native powercfg.exe @('-setactive', $guid)
+                if ($act.Code -ne 0) { throw "powercfg -setactive failed: $($act.Out.Trim())" }
+                Add-Changed
             }
 
-            P 92 "Activating plan"
-            $act = Invoke-Native powercfg.exe @('-setactive', $guid)
-            if ($act.Code -ne 0) { throw "powercfg -setactive failed: $($act.Out.Trim())" }
-
-            # Delete all other plans (the active plan cannot be deleted: ours was activated first)
+            # Delete all other plans (never the active one: ours is active at this point)
             P 94 "Removing other power plans"
+            $active = (Invoke-Native powercfg.exe @('/getactivescheme')).Out
+            $activeGuid = if ($active -match $guidRx) { $Matches[1] } else { $guid }
             $list = (Invoke-Native powercfg.exe @('/list')).Out
             $others = @()
             foreach ($l in ($list -split "`r?`n")) {
-                if ($l -match $guidRx -and $Matches[1] -ine $guid) { $others += $Matches[1] }
+                if ($l -match $guidRx -and $Matches[1] -ine $guid -and $Matches[1] -ine $activeGuid) { $others += $Matches[1] }
             }
+            if ($others.Count -eq 0) { Add-Same }
             $k = 0
             foreach ($o in $others) {
                 $k++
                 P (94 + [int](6 * $k / $others.Count)) "Deleting plan $k/$($others.Count)"
                 $d = Invoke-Native powercfg.exe @('-delete', $o)
-                if ($d.Code -eq 0) { L INFO "Deleted power plan: $o" }
+                if ($d.Code -eq 0) { Add-Changed; L INFO "Deleted power plan: $o" }
                 else { L WARNING "Could not delete power plan $o : $($d.Out.Trim())" }
             }
             P 100 "Done"
-            L SUCCESS "Power plan '$name' created and activated ($guid) - $($others.Count) other plan(s) removed"
+            if ($global:CW_Changed -eq 0) { L SUCCESS "Power plan '$name' already applied ($guid) - nothing to change" }
+            else { L SUCCESS "Power plan '$name' active ($guid): $planChanged setting(s) changed, $planSame already set, $($others.Count) other plan(s) removed" }
         } catch { L ERROR "Power plan failed: $($_.Exception.Message)" }
     } },
 
@@ -1344,10 +1460,13 @@ $Tasks = @(
                 @('EnableControlledFolderAccess', 0),     # does not block games from writing to Documents
                 @('EnableNetworkProtection', 0)
             )
+            $mpPref = $null
+            try { $mpPref = Get-MpPreference -ErrorAction Stop } catch { }
             $i = 0
             foreach ($s in $settings) {
                 $i++
-                try { $h = @{ $s[0] = $s[1] }; Set-MpPreference @h -ErrorAction Stop; L INFO "Defender: $($s[0]) = $($s[1])" }
+                if ($mpPref -and $null -ne $mpPref.($s[0]) -and [string]$mpPref.($s[0]) -eq [string]$s[1]) { Add-Same; P (5 + [int](40 * $i / $settings.Count)) "Defender setting $i/$($settings.Count)"; continue }
+                try { $h = @{ $s[0] = $s[1] }; Set-MpPreference @h -ErrorAction Stop; Add-Changed; L INFO "Defender: $($s[0]) = $($s[1])" }
                 catch { L INFO "Defender setting not applied ($($s[0])) - Tamper Protection or unsupported" }
                 P (5 + [int](40 * $i / $settings.Count)) "Defender setting $i/$($settings.Count)"
             }
@@ -1398,7 +1517,6 @@ $Tasks = @(
     @{ Name = "Start Menu - Simple & Clean"; Script = {
         param($tempDir)
         try {
-            foreach ($pn in 'Widgets', 'WidgetService') { Stop-Process -Name $pn -Force -ErrorAction SilentlyContinue }
             $adv = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
             $pol = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer'
             $pm  = 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Start'
@@ -1434,6 +1552,7 @@ $Tasks = @(
                 @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Feeds', 'EnableFeeds', 0),
                 @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Feeds', 'ShellFeedsTaskbarViewMode', 2)
             )
+            $c0 = $global:CW_Changed
             $i = 0
             foreach ($it in $items) {
                 $i++
@@ -1442,9 +1561,21 @@ $Tasks = @(
                 catch { L INFO "Skipped (protected or unavailable): $($it[1])" }
                 P ([int](30 * $i / $items.Count)) "Start menu setting $i/$($items.Count)"
             }
+            $polChanged = $global:CW_Changed - $c0
+            if ($polChanged -gt 0) { foreach ($pn in 'Widgets', 'WidgetService') { Stop-Process -Name $pn -Force -ErrorAction SilentlyContinue } }
 
-            # Unpin EVERYTHING: delete the user's pin files; with the "empty list" policy
-            # above, Windows regenerates them EMPTY (new users included).
+            # Unpin EVERYTHING (only once: marker HKCU:\Software\CleanWindows\StartPinsReset): delete the user's pin files;
+            # with the "empty list" policy above, Windows regenerates them EMPTY (new users included).
+            $marker = 'HKCU:\Software\CleanWindows'
+            $done = $null
+            try { $done = (Get-ItemProperty -LiteralPath $marker -Name 'StartPinsReset' -ErrorAction Stop).StartPinsReset } catch { }
+            if ($done -eq 1) {
+                Add-Same
+                P 100 "Done"
+                if ($polChanged -gt 0) { Stop-Process -Name 'StartMenuExperienceHost' -Force -ErrorAction SilentlyContinue; L SUCCESS "Start menu: $polChanged setting(s) updated (pins were already reset by a previous run - not touched)" }
+                else { L SUCCESS "Start menu: already applied (pins already reset by a previous run)" }
+                return
+            }
             P 35 "Closing Start menu process"
             Stop-Process -Name 'StartMenuExperienceHost' -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 2
@@ -1454,10 +1585,11 @@ $Tasks = @(
             foreach ($bin in 'start.bin', 'start2.bin') {
                 $f = Join-Path $ls $bin
                 if (Test-Path -LiteralPath $f) {
-                    try { Remove-Item -LiteralPath $f -Force -ErrorAction Stop; $removed++; L INFO "Deleted $bin" }
+                    try { Remove-Item -LiteralPath $f -Force -ErrorAction Stop; $removed++; Add-Changed; L INFO "Deleted $bin" }
                     catch { L WARNING "Could not delete $bin : $($_.Exception.Message.Split("`n")[0])" }
                 }
             }
+            Set-Reg $marker 'StartPinsReset' 1
             P 75 "Restarting Start"
             Start-Sleep -Seconds 2
             Stop-Process -Name 'StartMenuExperienceHost' -Force -ErrorAction SilentlyContinue
@@ -1484,7 +1616,7 @@ $Tasks = @(
         param($tempDir)
         try {
             $w = Get-WingetPath
-            if ($w) { P 100 "Present"; L SUCCESS "winget available: $w"; return }
+            if ($w) { Add-Same; P 100 "Present"; L SUCCESS "winget available: $w"; return }
 
             P 5 "Registering App Installer"
             try { Add-AppxPackage -RegisterByFamilyName -MainPackage 'Microsoft.DesktopAppInstaller_8wekyb3d8bbwe' -ErrorAction Stop; Start-Sleep -Seconds 3 } catch { L INFO "App Installer is not staged for this user - downloading it" }
@@ -1513,7 +1645,7 @@ $Tasks = @(
         param($tempDir)
         try {
             $exe = 'C:\Battlestate Games\BsgLauncher\BsgLauncher.exe'
-            if (Test-Path -LiteralPath $exe) { P 100 "Already installed"; L SUCCESS "BSG Launcher already installed - skipped"; return }
+            if (Test-Path -LiteralPath $exe) { P 100 "Already installed"; Add-Same; L SUCCESS "BSG Launcher already installed - skipped"; return }
             $f = Join-Path $tempDir 'BsgLauncher_setup.exe'
             P 0 "Downloading"
             Get-FileAny @('https://launcher.escapefromtarkov.com/launcher/download') $f 0 45
@@ -1530,7 +1662,7 @@ $Tasks = @(
         param($tempDir)
         try {
             $exe = "${env:ProgramFiles(x86)}\Steam\steam.exe"
-            if (Test-Path -LiteralPath $exe) { P 100 "Already installed"; L SUCCESS "Steam already installed - skipped"; return }
+            if (Test-Path -LiteralPath $exe) { P 100 "Already installed"; Add-Same; L SUCCESS "Steam already installed - skipped"; return }
             $f = Join-Path $tempDir 'SteamSetup.exe'
             P 0 "Downloading"
             Get-FileAny @('https://cdn.akamai.steamstatic.com/client/installer/SteamSetup.exe', 'https://cdn.cloudflare.steamstatic.com/client/installer/SteamSetup.exe') $f 0 45
@@ -1545,7 +1677,7 @@ $Tasks = @(
         param($tempDir)
         try {
             $vlc = "$env:ProgramFiles\VideoLAN\VLC\vlc.exe"
-            if (Test-Path -LiteralPath $vlc) { P 100 "Already installed"; L SUCCESS "VLC already installed - skipped"; return }
+            if (Test-Path -LiteralPath $vlc) { P 100 "Already installed"; Add-Same; L SUCCESS "VLC already installed - skipped"; return }
             $done = $false
             try { P 5 "Installing VLC (winget)"; Install-Winget 'VideoLAN.VLC' 'winget' 5 95; $done = $true }
             catch { L INFO "winget VLC install failed ($($_.Exception.Message)) - trying the official VideoLAN installer" }
@@ -1568,6 +1700,10 @@ $Tasks = @(
         param($tempDir)
         try {
             $plexId = 'Plex.Plex'
+            P 2 "Checking if Plex is installed"
+            if (Test-AppInstalled -NameRx '^Plex( \(|$| [0-9])|^Plex$' -Paths @("$env:ProgramFiles\Plex\Plex\Plex.exe", "$env:LOCALAPPDATA\Programs\Plex\Plex.exe") -Appx '*Plex*' -WingetId $plexId) {
+                Add-Same; P 100 "Already installed"; L SUCCESS "Plex already installed - skipped"; return
+            }
             P 5 "Installing $plexId"
             Install-Winget $plexId 'winget' 10 98
             P 100 "Done"
@@ -1580,7 +1716,7 @@ $Tasks = @(
         param($tempDir)
         try {
             $exes = @("$env:ProgramFiles\Google\Chrome\Application\chrome.exe", "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe")
-            if (@($exes | Where-Object { Test-Path -LiteralPath $_ }).Count -gt 0) { P 100 "Already installed"; L SUCCESS "Chrome already installed - skipped"; return }
+            if (@($exes | Where-Object { Test-Path -LiteralPath $_ }).Count -gt 0) { P 100 "Already installed"; Add-Same; L SUCCESS "Chrome already installed - skipped"; return }
             $f = Join-Path $tempDir 'googlechromestandaloneenterprise64.msi'
             P 0 "Downloading"
             Get-FileAny @('https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi') $f 0 45
@@ -1594,7 +1730,7 @@ $Tasks = @(
     @{ Name = "Install Discord"; Script = {
         param($tempDir)
         try {
-            if (Test-Path -LiteralPath "$env:LOCALAPPDATA\Discord\Update.exe") { P 100 "Already installed"; L SUCCESS "Discord already installed - skipped"; return }
+            if (Test-Path -LiteralPath "$env:LOCALAPPDATA\Discord\Update.exe") { P 100 "Already installed"; Add-Same; L SUCCESS "Discord already installed - skipped"; return }
             $f = Join-Path $tempDir 'DiscordSetup.exe'
             P 0 "Downloading"
             Get-FileAny @('https://discord.com/api/downloads/distributions/app/installers/latest?channel=stable&platform=win&arch=x64') $f 0 40
@@ -1615,7 +1751,7 @@ $Tasks = @(
     @{ Name = "Install NanaZip"; Script = {
         param($tempDir)
         try {
-            if (Get-AppxPackage -Name '*NanaZip*' -ErrorAction SilentlyContinue) { P 100 "Already installed"; L SUCCESS "NanaZip already installed - skipped"; return }
+            if (Get-AppxPackage -Name '*NanaZip*' -ErrorAction SilentlyContinue) { P 100 "Already installed"; Add-Same; L SUCCESS "NanaZip already installed - skipped"; return }
             P 5 "Installing NanaZip"
             Install-Winget 'M2Team.NanaZip' 'winget' 8 98
             P 100 "Done"
@@ -1629,7 +1765,7 @@ $Tasks = @(
         param($tempDir)
         try {
             $exes = @("$env:ProgramFiles\Notepad++\notepad++.exe", "${env:ProgramFiles(x86)}\Notepad++\notepad++.exe")
-            if (@($exes | Where-Object { Test-Path -LiteralPath $_ }).Count -gt 0) { P 100 "Already installed"; L SUCCESS "Notepad++ already installed - skipped"; return }
+            if (@($exes | Where-Object { Test-Path -LiteralPath $_ }).Count -gt 0) { P 100 "Already installed"; Add-Same; L SUCCESS "Notepad++ already installed - skipped"; return }
             P 5 "Installing Notepad++"
             Install-Winget 'Notepad++.Notepad++' 'winget' 8 98
             P 100 "Done"
@@ -1647,9 +1783,9 @@ $Tasks = @(
             $rtExe  = Join-Path $rtDir 'RTSS.exe'
 
             if (-not (Test-Path -LiteralPath $abExe)) { P 3 "Installing MSI Afterburner"; Install-Winget 'Guru3D.Afterburner' 'winget' 5 60 }
-            else { L INFO "MSI Afterburner already installed" }
+            else { Add-Same; L INFO "MSI Afterburner already installed" }
             if (-not (Test-Path -LiteralPath $rtExe)) { P 60 "Installing RivaTuner Statistics Server"; Install-Winget 'Guru3D.RTSS' 'winget' 60 80 }
-            else { L INFO "RTSS already installed" }
+            else { Add-Same; L INFO "RTSS already installed" }
             if (-not (Test-Path -LiteralPath $rtExe)) { throw "RTSS.exe not found after installation" }
 
             # The installers may launch the programs: close them before changing the configuration
@@ -1721,15 +1857,30 @@ $Tasks = @(
                 'Microsoft.VCRedist.2013.x86', 'Microsoft.VCRedist.2013.x64',
                 'Microsoft.DotNet.DesktopRuntime.8'
             )
-            $ok = 0; $ko = 0; $i = 0
+            # Detection (uninstall registry display names): skip what is already installed
+            $detect = @{
+                'Microsoft.VCRedist.2005.x86' = 'Microsoft Visual C\+\+ 2005 Redistributable$'
+                'Microsoft.VCRedist.2005.x64' = 'Microsoft Visual C\+\+ 2005 Redistributable \(x64\)'
+                'Microsoft.VCRedist.2008.x86' = 'Microsoft Visual C\+\+ 2008 Redistributable - x86'
+                'Microsoft.VCRedist.2008.x64' = 'Microsoft Visual C\+\+ 2008 Redistributable - x64'
+                'Microsoft.VCRedist.2010.x86' = 'Microsoft Visual C\+\+ 2010\s+x86 Redistributable'
+                'Microsoft.VCRedist.2010.x64' = 'Microsoft Visual C\+\+ 2010\s+x64 Redistributable'
+                'Microsoft.VCRedist.2012.x86' = 'Microsoft Visual C\+\+ 2012 Redistributable \(x86\)'
+                'Microsoft.VCRedist.2012.x64' = 'Microsoft Visual C\+\+ 2012 Redistributable \(x64\)'
+                'Microsoft.VCRedist.2013.x86' = 'Microsoft Visual C\+\+ 2013 Redistributable \(x86\)'
+                'Microsoft.VCRedist.2013.x64' = 'Microsoft Visual C\+\+ 2013 Redistributable \(x64\)'
+                'Microsoft.DotNet.DesktopRuntime.8' = 'Microsoft Windows Desktop Runtime - 8\.'
+            }
+            $ok = 0; $ko = 0; $i = 0; $present = 0
             foreach ($pkg in $pkgs) {
                 $i++
                 $from = [int](100 * ($i - 1) / $pkgs.Count); $to = [Math]::Max($from + 1, [int](100 * $i / $pkgs.Count) - 1)
+                if (Test-AppInstalled -NameRx $detect[$pkg]) { $present++; $ok++; Add-Same; L INFO "Already installed: $pkg"; P $to "Already installed: $pkg"; continue }
                 try { Install-Winget $pkg 'winget' $from $to; $ok++ }
                 catch { $ko++; L INFO "Runtime not installed: $pkg ($($_.Exception.Message))" }
             }
             P 100 "Done"
-            if ($ok -gt 0) { L SUCCESS "Gaming runtimes: $ok installed / up to date, $ko unavailable" }
+            if ($ok -gt 0) { L SUCCESS "Gaming runtimes: $ok installed / up to date ($present already present, skipped), $ko unavailable" }
             else { L WARNING "No gaming runtime could be installed (winget unavailable or offline)" }
         } catch { L ERROR "Gaming runtimes failed: $($_.Exception.Message)" }
     } },
@@ -1741,6 +1892,9 @@ $Tasks = @(
         param($tempDir)
         try {
             if (@(Get-NvidiaGpu).Count -eq 0) { P 100 "No NVIDIA GPU"; L SKIP "No NVIDIA GPU detected - NVIDIA tasks skipped"; return }
+            if (Test-AppInstalled -NameRx 'NVCleanstall' -Paths @("$env:ProgramFiles\NVCleanstall\NVCleanstall.exe", "${env:ProgramFiles(x86)}\NVCleanstall\NVCleanstall.exe") -WingetId 'TechPowerUp.NVCleanstall') {
+                Add-Same; P 100 "Already installed"; L SUCCESS "NVCleanstall already installed - skipped"; return
+            }
             P 5 "Installing NVCleanstall"
             Install-Winget 'TechPowerUp.NVCleanstall' 'winget' 10 98
             P 100 "Done"
@@ -1769,7 +1923,7 @@ $Tasks = @(
             $cur = if ($digits.Length -ge 5) { $digits.Substring($digits.Length - 5).Insert(3, '.') } else { '' }
             $out = Join-Path $tempDir "nvidia_driver_$ver.exe"
             $skip = ($cur -eq $ver)
-            if ($skip) { L INFO "Driver $ver is already installed - download and install skipped" ; P 100 "Already up to date" }
+            if ($skip) { Add-Same; L INFO "Driver $ver is already installed - download and install skipped" ; P 100 "Already up to date" }
             else {
                 $alt = "https://international.download.nvidia.com/Windows/$ver/$ver-desktop-win10-win11-64bit-international-dch-whql.exe"
                 Get-FileAny @($url, $alt) $out 5 98
@@ -1786,7 +1940,7 @@ $Tasks = @(
             $stateFile = Join-Path $tempDir 'nvidia_state.json'
             if (@(Get-NvidiaGpu).Count -eq 0 -or -not (Test-Path -LiteralPath $stateFile)) { P 100 "Skipped"; L SKIP "No NVIDIA GPU or no downloaded driver - skipped"; return }
             $state = Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json
-            if ($state.Skip) { P 100 "Up to date"; L SUCCESS "NVIDIA driver already up to date - skipped"; return }
+            if ($state.Skip) { Add-Same; P 100 "Up to date"; L SUCCESS "NVIDIA driver already up to date - skipped"; return }
             if (-not (Test-Path -LiteralPath $state.File)) { throw "Driver package not found: $($state.File)" }
             Test-InstallerFile $state.File
 
@@ -1855,7 +2009,7 @@ $Tasks = @(
         param($tempDir)
         try {
             if (@(Get-NvidiaGpu).Count -eq 0) { P 100 "No NVIDIA GPU"; L SKIP "No NVIDIA GPU detected - skipped"; return }
-            if (Get-AppxPackage -AllUsers -Name 'NVIDIACorp.NVIDIAControlPanel' -ErrorAction SilentlyContinue) { P 100 "Already installed"; L SUCCESS "NVIDIA Control Panel already installed - skipped"; return }
+            if (Get-AppxPackage -AllUsers -Name 'NVIDIACorp.NVIDIAControlPanel' -ErrorAction SilentlyContinue) { P 100 "Already installed"; Add-Same; L SUCCESS "NVIDIA Control Panel already installed - skipped"; return }
             P 5 "Installing NVIDIA Control Panel (Microsoft Store)"
             Install-Winget '9NF8H0H7WMLT' 'msstore' 10 98
             P 100 "Done"
@@ -1880,9 +2034,9 @@ $Tasks = @(
                 $cur = $null
                 try { $cur = (Get-ItemProperty -LiteralPath $fx -Name $name -ErrorAction Stop).$name } catch { }
                 if ($cur) {
-                    try { Set-ItemProperty -LiteralPath $fx -Name $name -Value '' -Type String -ErrorAction Stop; $changed++; L INFO "Spatial audio turned OFF for endpoint $($ep.PSChildName)" }
+                    try { Set-ItemProperty -LiteralPath $fx -Name $name -Value '' -Type String -ErrorAction Stop; $changed++; Add-Changed; L INFO "Spatial audio turned OFF for endpoint $($ep.PSChildName)" }
                     catch { $denied++ }
-                } else { $already++ }
+                } else { $already++; Add-Same }
                 P (5 + [int](70 * $i / [Math]::Max(1, $eps.Count))) "Device $i/$($eps.Count)"
             }
             L INFO "Spatial audio: $changed device(s) switched OFF, $already already OFF, $denied protected"
@@ -1944,6 +2098,7 @@ $Tasks = @(
                 @('AdvancedEEE', 0), @('EEELinkAdvertisement', 0), @('*LsoV2IPv4', 0), @('*RscIPv4', 0), @('*SelectiveSuspend', 0),
                 @('*WakeOnMagicPacket', 0), @('*WakeOnPattern', 0), @('*PMARPOffload', 0), @('*PMNSOffload', 0), @('*PriorityVLANTag', 0)
             )
+            $adapterChanged = $false
             $n = 0
             foreach ($a in $adapters) {
                 $n++
@@ -1954,7 +2109,10 @@ $Tasks = @(
                 L INFO "Nagle algorithm disabled on $($a.Name)"
                 foreach ($pr in $props) {
                     try {
-                        if (Get-NetAdapterAdvancedProperty -Name $a.Name -RegistryKeyword $pr[0] -ErrorAction SilentlyContinue) {
+                        $ap = Get-NetAdapterAdvancedProperty -Name $a.Name -RegistryKeyword $pr[0] -ErrorAction SilentlyContinue
+                        if ($ap -and [string](@($ap.RegistryValue)[0]) -eq [string]$pr[1]) { Add-Same }
+                        elseif ($ap) {
+                            $adapterChanged = $true; Add-Changed
                             Set-NetAdapterAdvancedProperty -Name $a.Name -RegistryKeyword $pr[0] -RegistryValue ([string]$pr[1]) -NoRestart -ErrorAction Stop
                             L INFO "$($a.Name): $($pr[0]) = $($pr[1])"
                         }
@@ -1973,7 +2131,9 @@ $Tasks = @(
             if ($disableIPv6) { $bindings += 'ms_tcpip6' }
             foreach ($a in $adapters) {
                 foreach ($comp in $bindings) {
-                    try { Disable-NetAdapterBinding -Name $a.Name -ComponentID $comp -ErrorAction Stop; L INFO "$($a.Name): binding $comp disabled" }
+                    $bd = Get-NetAdapterBinding -Name $a.Name -ComponentID $comp -ErrorAction SilentlyContinue
+                    if ($bd -and -not $bd.Enabled) { Add-Same; continue }
+                    try { Disable-NetAdapterBinding -Name $a.Name -ComponentID $comp -ErrorAction Stop; $adapterChanged = $true; Add-Changed; L INFO "$($a.Name): binding $comp disabled" }
                     catch { L INFO "$($a.Name): binding $comp unchanged" }
                 }
                 try { Set-DnsClient -InterfaceIndex $a.ifIndex -RegisterThisConnectionsAddress $false -ErrorAction Stop; L INFO "$($a.Name): DNS self-registration off" } catch { }
@@ -1981,13 +2141,15 @@ $Tasks = @(
             }
             # NetBIOS over TCP/IP disabled
             foreach ($c in @(Get-CimInstance Win32_NetworkAdapterConfiguration -ErrorAction SilentlyContinue | Where-Object { $_.IPEnabled -and ($adapters.ifIndex -contains $_.InterfaceIndex) })) {
+                if ($c.TcpipNetbiosOptions -eq 2) { Add-Same; continue }
                 try { Invoke-CimMethod -InputObject $c -MethodName SetTcpipNetbios -Arguments @{ TcpipNetbiosOptions = [uint32]2 } -ErrorAction Stop | Out-Null; L INFO "NetBIOS over TCP/IP disabled on $($c.Description)" } catch { }
             }
             P 77 "Protocols unbound"
 
             # ---- 4) Restart the adapters to apply (a few seconds of disconnection) ----
             P 78 "Restarting adapters"
-            foreach ($a in $adapters) {
+            if (-not $adapterChanged) { L INFO "No adapter setting changed - adapters not restarted" }
+            foreach ($a in @($adapters | Where-Object { $adapterChanged })) {
                 try {
                     Restart-NetAdapter -Name $a.Name -Confirm:$false -ErrorAction Stop
                     for ($w = 0; $w -lt 40; $w++) { if ((Get-NetAdapter -Name $a.Name -ErrorAction SilentlyContinue).Status -eq 'Up') { break }; Start-Sleep -Seconds 1 }
@@ -2062,13 +2224,13 @@ $Tasks = @(
                     $orig = $null
                     try { $orig = (Get-ItemProperty -LiteralPath $k -Name 'Start' -ErrorAction Stop).Start } catch { }
                     if ($null -ne $orig -and -not $base.Contains($s)) { $base[$s] = [int]$orig }
-                    if ($orig -eq 4 -or $null -eq $orig) { $already++ }
+                    if ($orig -eq 4 -or $null -eq $orig) { $already++; Add-Same }
                     else {
                         if ($perUser -notcontains $s) { Invoke-Native sc.exe @('stop', $s) | Out-Null }
                         $ok = $false
                         try { Set-Reg $k 'Start' 4; $ok = $true } catch { }
                         if (-not $ok) { $r = Invoke-Native sc.exe @('config', $s, 'start=', 'disabled'); if ($r.Code -eq 0) { $ok = $true } }
-                        if ($ok) { $changed++; L INFO "Service disabled: $s (was Start=$orig)" }
+                        if ($ok) { $changed++; Add-Changed; L INFO "Service disabled: $s (was Start=$orig)" }
                         else { $failed++; L INFO "Service protected, not changed: $s" }
                     }
                 }
@@ -2127,6 +2289,11 @@ $Tasks = @(
                 @{ Run = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run';                      Ap = "HKLM:\$approved\Run" },
                 @{ Run = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run';          Ap = "HKLM:\$approved\Run32" }
             )
+            # Already disabled in Task Manager? (StartupApproved value whose first byte is odd = disabled)
+            function Test-StartupDisabled {
+                param($Ap, $Name)
+                try { $v = (Get-ItemProperty -LiteralPath $Ap -Name $Name -ErrorAction Stop).$Name; return ($v -is [byte[]] -and $v.Length -gt 0 -and ($v[0] -band 1)) } catch { return $false }
+            }
             $count = 0; $kept = 0
             P 0 "Scanning startup entries"
             foreach ($tg in $targets) {
@@ -2134,6 +2301,7 @@ $Tasks = @(
                 try { $props = @((Get-ItemProperty -LiteralPath $tg.Run -ErrorAction Stop).PSObject.Properties | Where-Object { $_.Name -notmatch '^PS(Path|ParentPath|ChildName|Drive|Provider)$' }) } catch { }
                 foreach ($pr in $props) {
                     if ($pr.Name -match $keep -or [string]$pr.Value -match $keep) { $kept++; L INFO "Startup kept: $($pr.Name)"; continue }
+                    if (Test-StartupDisabled $tg.Ap $pr.Name) { Add-Same; continue }
                     try { Set-Reg $tg.Ap $pr.Name $disabledBytes 'Binary'; $count++; L INFO "Startup disabled: $($pr.Name)" } catch { L INFO "Startup entry protected: $($pr.Name)" }
                 }
             }
@@ -2145,6 +2313,7 @@ $Tasks = @(
             foreach ($fd in $folders) {
                 foreach ($f in @(Get-ChildItem -LiteralPath $fd.Dir -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'desktop.ini' })) {
                     if ($f.Name -match $keep) { $kept++; continue }
+                    if (Test-StartupDisabled $fd.Ap $f.Name) { Add-Same; continue }
                     try { Set-Reg $fd.Ap $f.Name $disabledBytes 'Binary'; $count++; L INFO "Startup folder item disabled: $($f.Name)" } catch { }
                 }
             }
@@ -2177,8 +2346,8 @@ $Tasks = @(
             foreach ($tk in $tasks) {
                 $n++
                 foreach ($x in @(Get-ScheduledTask -TaskPath $tk[0] -TaskName $tk[1] -ErrorAction SilentlyContinue)) {
-                    if ($x.State -eq 'Disabled') { continue }
-                    try { Disable-ScheduledTask -TaskPath $x.TaskPath -TaskName $x.TaskName -ErrorAction Stop | Out-Null; $tc++; L INFO "Scheduled task disabled: $($x.TaskPath)$($x.TaskName)" } catch { }
+                    if ($x.State -eq 'Disabled') { Add-Same; continue }
+                    try { Disable-ScheduledTask -TaskPath $x.TaskPath -TaskName $x.TaskName -ErrorAction Stop | Out-Null; $tc++; Add-Changed; L INFO "Scheduled task disabled: $($x.TaskPath)$($x.TaskName)" } catch { }
                 }
                 P (45 + [int](50 * $n / $tasks.Count)) "Scheduled tasks $n/$($tasks.Count)"
             }
@@ -2218,15 +2387,22 @@ $Tasks = @(
             # Memory: compression and page combining are useless with plenty of RAM (less CPU / latency)
             P 20 "Memory management"
             if ($ramGB -ge 24) {
+                $mm = $null
+                try { $mm = Get-MMAgent -ErrorAction Stop } catch { }
                 foreach ($opt in 'MemoryCompression', 'PageCombining') {
-                    try { $h = @{}; $h[$opt] = $true; Disable-MMAgent @h -ErrorAction Stop; L INFO "MMAgent: $opt disabled" } catch { L INFO "MMAgent: $opt unchanged" }
+                    if ($mm -and $mm.$opt -eq $false) { Add-Same; L INFO "MMAgent: $opt already disabled"; continue }
+                    try { $h = @{}; $h[$opt] = $true; Disable-MMAgent @h -ErrorAction Stop; Add-Changed; L INFO "MMAgent: $opt disabled" } catch { L INFO "MMAgent: $opt unchanged" }
                 }
             } else { L INFO "RAM below 24 GB: memory compression left enabled" }
 
             # Disk: TRIM enabled
             P 45 "Disk"
-            $r = Invoke-Native fsutil.exe @('behavior', 'set', 'DisableDeleteNotify', '0')
-            if ($r.Code -eq 0) { L INFO "TRIM enabled (DisableDeleteNotify = 0)" }
+            $q = Invoke-Native fsutil.exe @('behavior', 'query', 'DisableDeleteNotify')
+            if ($q.Out -match 'NTFS DisableDeleteNotify\s*=\s*0' -and $q.Out -notmatch 'NTFS DisableDeleteNotify\s*=\s*1') { Add-Same; L INFO "TRIM already enabled" }
+            else {
+                $r = Invoke-Native fsutil.exe @('behavior', 'set', 'DisableDeleteNotify', '0')
+                if ($r.Code -eq 0) { Add-Changed; L INFO "TRIM enabled (DisableDeleteNotify = 0)" }
+            }
 
             # Windows Update: no longer replaces the NVIDIA driver, no forced reboot during a session
             P 60 "Windows Update policy"
@@ -2254,15 +2430,19 @@ $Tasks = @(
             L INFO ("Boot configuration before: " + $(if ($hv) { $hv.Trim() -replace '\s+', ' ' } else { 'hypervisorlaunchtype not set (Windows default)' }))
 
             P 30 "Disabling hypervisor launch"
+            if ($hv -and $hv -match 'hypervisorlaunchtype\s+Off') { Add-Same; L INFO "hypervisorlaunchtype already off" }
+            else {
             $r = Invoke-Native bcdedit.exe @('/set', '{current}', 'hypervisorlaunchtype', 'off')
-            if ($r.Code -eq 0) { L INFO "hypervisorlaunchtype = off (WSL2 / Docker / Windows Sandbox / Android apps stop working; revert: bcdedit /set hypervisorlaunchtype auto)" }
+            if ($r.Code -eq 0) { Add-Changed; L INFO "hypervisorlaunchtype = off (WSL2 / Docker / Windows Sandbox / Android apps stop working; revert: bcdedit /set hypervisorlaunchtype auto)" }
             else { L WARNING "bcdedit hypervisorlaunchtype failed: $($r.Out.Trim())" }
+            }
 
             # Timer: make sure no forced HPET is configured (value absent = default Windows behavior, the fastest)
             P 65 "Default system timer"
             foreach ($v in 'useplatformclock', 'useplatformtick') {
+                if ($cur -notmatch "(?m)^\s*$v\s") { Add-Same; continue }
                 $d = Invoke-Native bcdedit.exe @('/deletevalue', $v)
-                if ($d.Code -eq 0) { L INFO "bcdedit: forced value '$v' removed" }
+                if ($d.Code -eq 0) { Add-Changed; L INFO "bcdedit: forced value '$v' removed" }
             }
             P 100 "Done"
             L SUCCESS "Boot tweaks applied (effective after reboot)"
@@ -2280,13 +2460,14 @@ $Tasks = @(
             $feats = @(Get-WindowsOptionalFeature -Online -ErrorAction Stop)
             $todo  = @($feats | Where-Object { $_.State -eq 'Enabled' -and ($candidates -contains $_.FeatureName) })
             L INFO "Optional features currently enabled among the candidates: $($todo.Count)"
+            Add-Same (@($feats | Where-Object { ($candidates -contains $_.FeatureName) -and $_.State -ne 'Enabled' }).Count)
             $i = 0; $ok = 0; $reboot = $false
             foreach ($f in $todo) {
                 $i++
                 P (10 + [int](85 * $i / $todo.Count)) "Disabling $($f.FeatureName)"
                 try {
                     $r = Disable-WindowsOptionalFeature -Online -FeatureName $f.FeatureName -NoRestart -ErrorAction Stop
-                    $ok++
+                    $ok++; Add-Changed
                     if ($r.RestartNeeded) { $reboot = $true }
                     L INFO "Feature disabled: $($f.FeatureName)"
                 } catch { L WARNING "Could not disable $($f.FeatureName): $($_.Exception.Message.Split("`n")[0])" }
@@ -2307,8 +2488,8 @@ $Tasks = @(
             foreach ($d in $devs) {
                 $i++
                 if ($d.Enable) {
-                    try { Set-CimInstance -InputObject $d -Property @{ Enable = $false } -ErrorAction Stop; $changed++ } catch { }
-                }
+                    try { Set-CimInstance -InputObject $d -Property @{ Enable = $false } -ErrorAction Stop; $changed++; Add-Changed } catch { }
+                } else { Add-Same }
                 if ($i % 5 -eq 0) { P ([int](95 * $i / [Math]::Max(1, $devs.Count))) "Device $i/$($devs.Count)" }
             }
             P 100 "Done"
@@ -2619,7 +2800,7 @@ try {
     $out.Add("Total duration: $([int]((Get-Date) - $script:RunStart).TotalMinutes) min | Full log: $script:ActiveLog")
     $out.Add('')
     $out.Add('TASKS')
-    foreach ($s in $script:Summary) { $out.Add(("  {0,-62} {1,-20} {2,5}s" -f $s.Name, $s.Status, $s.Seconds)) }
+    foreach ($s in $script:Summary) { $out.Add(("  {0,-62} {1,-20} {2,5}s   changed: {3,-4} already set: {4}" -f $s.Name, $s.Status, $s.Seconds, $s.Changed, $s.Same)) }
     $out.Add('')
     $out.Add('FINAL STATE CHECK')
     foreach ($ck in $script:Checks) { $out.Add("  $ck") }
