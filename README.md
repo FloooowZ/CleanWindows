@@ -82,7 +82,7 @@ Each task runs in its own job with a timeout (5 minutes by default, longer for d
 - Services Optimization (Gaming)
 - Startup Programs + Scheduled Tasks (Minimal)
 - Process Reduction (svchost grouping)
-- High-End PC Tweaks (i7-13700K / RTX 4080 class)
+- System Performance Tweaks (memory, SSD TRIM, driver updates)
 - Boot Tweaks (hypervisor off, default system timer)
 - Optional Windows Features Cleanup (Hyper-V / WSL / Sandbox / legacy)
 - Device Power Management Off (USB / HID / Network)

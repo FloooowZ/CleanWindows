@@ -2223,18 +2223,11 @@ $Tasks = @(
         } catch { L ERROR "Process reduction failed: $($_.Exception.Message)" }
     } },
 
-    # High-end PC (e.g. i7-13700K + RTX 4080): memory, disk, Windows Update drivers
-    @{ Name = "High-End PC Tweaks (i7-13700K / RTX 4080 class)"; Script = {
+    # System tweaks: memory, disk, Windows Update drivers
+    @{ Name = "System Performance Tweaks (memory, SSD TRIM, driver updates)"; Script = {
         param($tempDir)
         try {
-            P 0 "Detecting hardware"
-            $cpu   = Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1
             $ramGB = [math]::Round((Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory / 1GB)
-            $build = [int](Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).BuildNumber
-            $gpu   = @(Get-NvidiaGpu | Select-Object -First 1)
-            L INFO ("CPU: {0} ({1} cores / {2} threads) | RAM: {3} GB | GPU: {4}" -f $cpu.Name, $cpu.NumberOfCores, $cpu.NumberOfLogicalProcessors, $ramGB, $gpu.Name)
-            if ($build -lt 22000) { L WARNING "Windows 10 detected: Windows 11 is recommended for Intel hybrid CPUs (Thread Director P/E-core scheduling)" }
-            if ($cpu.Name -match '1[34]\d{3}K') { L INFO "13th/14th gen Intel Core K CPU: keep the BIOS up to date (latest Intel microcode, 0x12B or newer) to avoid Vmin-shift instability" }
 
             # Memory: compression and page combining are useless with plenty of RAM (less CPU / latency)
             P 20 "Memory management"
@@ -2261,8 +2254,8 @@ $Tasks = @(
             L INFO "Windows Update will no longer install graphics drivers automatically"
 
             P 100 "Done"
-            L SUCCESS "High-end tweaks applied (memory, TRIM, driver updates locked). Reboot recommended"
-        } catch { L ERROR "High-end tweaks failed: $($_.Exception.Message)" }
+            L SUCCESS "System performance tweaks applied (memory, TRIM, driver updates locked). Reboot recommended"
+        } catch { L ERROR "System performance tweaks failed: $($_.Exception.Message)" }
     } },
 
     # Boot: hypervisor disabled (less overhead, fewer anti-cheat issues) + default system timer
