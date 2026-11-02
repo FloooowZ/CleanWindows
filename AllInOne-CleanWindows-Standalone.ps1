@@ -57,7 +57,7 @@ Clear-Host
 $TaskTimeoutSeconds = 300          # Timeout applied to EACH task (5 minutes)
 $CleanUserDownloads = $true        # $true = also empties the Downloads folder at the end ($false to keep it)
 $RunComponentCleanup = $true       # $true = component store cleanup (DISM): frees GBs but can take several minutes
-$ProgressPreference = 'Continue'   # Required to display the progress bars
+$ProgressPreference = 'SilentlyContinue'   # PowerShell's own progress block is replaced by a clean one-line display (see Show-TaskLine)
 
 # === Logging (file only: the console stays clean) ===
 $docs = [Environment]::GetFolderPath('MyDocuments')
@@ -473,6 +473,40 @@ $InitLoader = [scriptblock]::Create("Invoke-Expression ([System.IO.File]::ReadAl
 # =============================================================================
 $script:Summary = @()
 
+# Console display: one line per task, redrawn in place (no flickering PowerShell progress block)
+$script:BarFull  = [string][char]0x2588   # full block
+$script:BarEmpty = [string][char]0x2591   # light shade
+$script:Spinner  = @('|', '/', '-', '\')
+function Get-ConsoleWidth {
+    try { $w = [Console]::WindowWidth; if ($w -gt 20) { return $w } } catch { }
+    return 100
+}
+function Get-Bar {
+    param([int]$Pct, [int]$Width = 20)
+    $n = [int][Math]::Round($Width * [Math]::Max(0, [Math]::Min(100, $Pct)) / 100)
+    return ($script:BarFull * $n) + ($script:BarEmpty * ($Width - $n))
+}
+# Draws (or redraws) the current task line: " [ 3/42]  ####----  45%  Task name - step   12s"
+function Show-TaskLine {
+    param([int]$Index, [int]$Total, [int]$Pct, [string]$Name, [string]$Msg, [string]$Tail, [string]$BarColor = 'Red', [string]$TextColor = 'Gray', [switch]$Final)
+    $width = Get-ConsoleWidth
+    $head  = " [{0,2}/{1}] " -f $Index, $Total
+    $bar   = Get-Bar $Pct
+    $pctS  = " {0,3}%  " -f $Pct
+    $tailS = if ($Tail) { "  $Tail" } else { '' }
+    $text  = if ($Msg) { "$Name - $Msg" } else { $Name }
+    $room  = $width - 1 - $head.Length - $bar.Length - $pctS.Length - $tailS.Length
+    if ($room -lt 10) { $room = 10 }
+    if ($text.Length -gt $room) { $text = $text.Substring(0, $room - 3) + '...' }
+    $text  = $text.PadRight($room)
+    Write-Host "`r" -NoNewline
+    Write-Host $head -NoNewline -ForegroundColor DarkGray
+    Write-Host $bar -NoNewline -ForegroundColor $BarColor
+    Write-Host $pctS -NoNewline -ForegroundColor White
+    Write-Host $text -NoNewline -ForegroundColor $TextColor
+    if ($Final) { Write-Host $tailS -ForegroundColor $BarColor } else { Write-Host $tailS -NoNewline -ForegroundColor DarkGray }
+}
+
 function Invoke-Task {
     param([string]$Name, [scriptblock]$Script, [int]$Index, [int]$Total, [int]$Timeout = 0)
     if (-not $Timeout) { $Timeout = $TaskTimeoutSeconds }
@@ -518,8 +552,9 @@ function Invoke-Task {
 
         $pct = [Math]::Max(0, [Math]::Min(100, $pct))
         $overall = [int]((($Index - 1) * 100 + $pct) / $Total)
-        Write-Progress -Id 1 -Activity "All-In-One Clean Windows" -Status "Task $Index/$Total - overall $overall%" -PercentComplete $overall
-        Write-Progress -Id 2 -ParentId 1 -Activity $Name -Status ("{0}  [{1}s / {2}s]" -f $msg, [int]$sw.Elapsed.TotalSeconds, $Timeout) -PercentComplete $pct
+        $spin = $script:Spinner[[int]($sw.Elapsed.TotalMilliseconds / 200) % 4]
+        Show-TaskLine -Index $Index -Total $Total -Pct $pct -Name $Name -Msg $msg -Tail ("{0} {1,4}s" -f $spin, [int]$sw.Elapsed.TotalSeconds)
+        try { $Host.UI.RawUI.WindowTitle = "CleanWindows - $overall% - task $Index/$Total" } catch { }
 
         if (-not $running) { break }
         if ($sw.Elapsed.TotalSeconds -ge $Timeout) { $timedOut = $true; break }
@@ -537,7 +572,6 @@ function Invoke-Task {
     # Non-fatal errors emitted by the task (kept for diagnostics)
     foreach ($je in ($jobErrors | Select-Object -First 8)) { Write-Log ("[{0}] {1}" -f $Name, ($je -replace '\s+', ' ')) "JOBERR" }
     Remove-Job $job -Force -ErrorAction SilentlyContinue
-    Write-Progress -Id 2 -Activity $Name -Completed
 
     # Single-line result, with a text bar
     if ($timedOut)      { $status = "TIMEOUT (skipped)"; $color = "Yellow"; $final = $pct }
@@ -548,10 +582,9 @@ function Invoke-Task {
     else                { $status = "OK";                 $color = "Green";  $final = 100 }
     if ($nChanged + $nSame -gt 0) { Write-Log "$Name : $nChanged changed, $nSame already set" "INFO" }
 
-    $w = 20; $n = [int]($w * $final / 100)
-    $bar = "[" + ("#" * $n) + ("-" * ($w - $n)) + "]"
-    Write-Host ("{0} {1,3}%  {2} - {3}" -f $bar, $final, $Name, $status) -ForegroundColor $color
     $secs = [int]$sw.Elapsed.TotalSeconds
+    # Final line for this task (replaces the live line): bar + status in its color
+    Show-TaskLine -Index $Index -Total $Total -Pct $final -Name $Name -Msg '' -Tail ("{0}  {1,4}s" -f $status, $secs) -BarColor $color -TextColor White -Final
     Write-Log "<<< $Name : $status (${secs}s)" $(if ($timedOut -or $hadError) { "WARNING" } else { "SUCCESS" })
     $script:Summary += [pscustomobject]@{ Name = $Name; Status = $status; Seconds = $secs; Changed = $nChanged; Same = $nSame }
 }
@@ -2752,13 +2785,15 @@ Write-Host "All-In-One Clean Windows - $($selected.Count) tasks (timeout ${TaskT
 Write-Host "Log: $script:ActiveLog" -ForegroundColor Gray
 Write-Host ""
 
+try { [Console]::CursorVisible = $false } catch { }
 $i = 0
 foreach ($t in $selected) {
     $i++
     Invoke-Task -Name $t.Name -Script $t.Script -Index $i -Total $selected.Count -Timeout $t.Timeout
 }
 
-Write-Progress -Id 1 -Activity "All-In-One Clean Windows" -Completed
+try { [Console]::CursorVisible = $true } catch { }
+try { $Host.UI.RawUI.WindowTitle = "CleanWindows - finished" } catch { }
 Write-Log "=== All-In-One Clean Windows finished ===" "SUCCESS"
 
 $bad = @($script:Summary | Where-Object { $_.Status -like 'TIMEOUT*' -or $_.Status -like 'ERROR*' })
