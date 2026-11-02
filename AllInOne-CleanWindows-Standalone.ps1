@@ -19,7 +19,9 @@ param(
     [string]$Skip = '',   # e.g. -Skip "Plex,Final Cleanup": skips these tasks
     [switch]$List,        # shows the task list (numbers / names) then exits
     [ValidateSet('Ask','Yes','No')]
-    [string]$Launchers = 'Ask'   # game launchers (Steam, Escape From Tarkov): Ask = question at startup, Yes = install, No = skip
+    [string]$Launchers = 'Ask',  # game launchers (Steam, Escape From Tarkov): Ask = question at startup, Yes = install, No = skip
+    [ValidateSet('Ask','Yes','No')]
+    [string]$NvidiaProfile = 'Ask'   # NVIDIA Profile Inspector tweaks (max performance, low latency, unlimited shader cache): Ask / Yes / No
 )
 
 # === Admin elevation (automatic relaunch as Administrator, with Bypass) ===
@@ -41,6 +43,7 @@ if (-not $isAdmin) {
         if ($Skip) { $fwd += ' -Skip "' + ($Skip -replace '"', '') + '"' }
         if ($List) { $fwd += ' -List' }
         if ($Launchers -ne 'Ask') { $fwd += ' -Launchers ' + $Launchers }
+        if ($NvidiaProfile -ne 'Ask') { $fwd += ' -NvidiaProfile ' + $NvidiaProfile }
         Start-Process PowerShell.exe -ArgumentList (("-NoProfile -ExecutionPolicy Bypass -File `"{0}`"" -f $PSCommandPath) + $fwd) -Verb RunAs -ErrorAction Stop
     } catch {
         Write-Host "Administrator rights are required (UAC was refused). Exiting." -ForegroundColor Red
@@ -1224,6 +1227,10 @@ $Tasks = @(
                 @("$mm\Tasks\Games", 'SFIO Priority', 'High', 'String'),
                 @('HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers', 'HwSchMode', 2),
                 @('HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling', 'PowerThrottlingOff', 1),
+                # Foreground priority: short, variable quanta with foreground boost (0x26 = 38) - the active game gets more CPU time
+                @('HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl', 'Win32PrioritySeparation', 38),
+                # Fast Startup off (every boot is a real cold boot: fresh drivers and memory). Hibernation itself is handled below
+                @('HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power', 'HiberbootEnabled', 0),
                 @('HKCU:\Software\Microsoft\DirectX\UserGpuPreferences', 'DirectXUserGlobalSettings', 'SwapEffectUpgradeEnable=1;VRROptimizeEnable=0;', 'String'),
                 # No Sticky Keys popups in game (mouse settings: "Mouse Optimization" task)
                 @('HKCU:\Control Panel\Accessibility\StickyKeys', 'Flags', '506', 'String'),
@@ -1261,7 +1268,7 @@ $Tasks = @(
             if ($f.Code -eq 0) { L INFO "NTFS last access time updates disabled" }
 
             P 100 "Done"
-            L SUCCESS "Windows performance applied: animations OFF (live), Game Mode, GPU scheduling, MMCSS, no telemetry. Reboot recommended"
+            L SUCCESS "Windows performance applied: animations OFF (live), Game Mode, GPU scheduling, MMCSS, foreground priority, Fast Startup off, no telemetry. Reboot recommended"
         } catch { L ERROR "Performance failed: $($_.Exception.Message)" }
     } },
 
@@ -2140,6 +2147,130 @@ $Tasks = @(
         } catch { L ERROR "NVIDIA Control Panel failed: $($_.Exception.Message)" }
     } },
 
+    # NVIDIA Profile Inspector (Orbmu2k, official GitHub releases): global "Base Profile" tweaks, merged (other settings kept)
+    @{ Name = "NVIDIA - Profile Inspector Gaming Settings"; Timeout = 300; Script = {
+        param($tempDir)
+        try {
+            if (@(Get-NvidiaGpu).Count -eq 0) { P 100 "No NVIDIA GPU"; L SKIP "No NVIDIA GPU detected - skipped"; return }
+            # Setting IDs / values from nvidiaProfileInspector CustomSettingNames.xml + NvApiDriverSettings.h (values are decimal in .nip files)
+            $wanted = [ordered]@{
+                0x1057EB71 = @('Power management mode', 1)                  # 1 = Prefer maximum performance
+                0x007BA09E = @('Maximum pre-rendered frames', 1)            # 1 frame = Low Latency Mode "On"
+                0x0005F543 = @('Ultra Low Latency - CPL State', 1)          # 1 = "On" shown in the NVIDIA Control Panel
+                0x10835000 = @('Ultra Low Latency - Enabled', 0)            # 0 = "On" (1 would be "Ultra")
+                0x00AC8497 = @('Shader Cache - Cache Size', 4294967295)     # 0xFFFFFFFF = Unlimited
+            }
+            $docs = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'CleanWindows'
+            if (-not (Test-Path -LiteralPath $docs)) { New-Item -ItemType Directory -Path $docs -Force | Out-Null }
+
+            P 5 "Looking up the latest NVIDIA Profile Inspector release"
+            [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+            $urls = @()
+            try {
+                $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/Orbmu2k/nvidiaProfileInspector/releases/latest' -Headers @{ 'User-Agent' = 'CleanWindows' } -UseBasicParsing -ErrorAction Stop
+                $asset = @($rel.assets | Where-Object { $_.name -like '*.zip' } | Select-Object -First 1)
+                if ($asset.Count -gt 0) { $urls += $asset[0].browser_download_url; L INFO "Profile Inspector release: $($rel.tag_name) ($($asset[0].name))" }
+            } catch { L INFO "GitHub API unavailable: $($_.Exception.Message)" }
+            $urls += 'https://github.com/Orbmu2k/nvidiaProfileInspector/releases/latest/download/nvidiaProfileInspector.zip'
+            $zip = Join-Path $tempDir 'nvidiaProfileInspector.zip'
+            $dir = Join-Path $tempDir 'nvidiaProfileInspector'
+            Get-FileAny $urls $zip 10 40
+            P 42 "Extracting"
+            if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
+            Expand-Archive -LiteralPath $zip -DestinationPath $dir -Force
+            $exe = Get-ChildItem -LiteralPath $dir -Recurse -Filter 'nvidiaProfileInspector.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $exe) { L WARNING "nvidiaProfileInspector.exe not found in the downloaded archive - skipped"; P 100 "Failed"; return }
+            $exeDir = Split-Path -Parent $exe.FullName
+
+            # Export of the current customized profiles (-exportCustomized writes CustomProfiles_<date>.nip next to the exe):
+            # used both as a backup and to read the current Base Profile values (check before apply)
+            $export = {
+                Get-ChildItem -LiteralPath $exeDir -Filter 'CustomProfiles_*.nip' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+                $pr = Start-Process -FilePath $exe.FullName -ArgumentList '-exportCustomized' -WorkingDirectory $exeDir -PassThru -WindowStyle Hidden
+                if (-not $pr.WaitForExit(90000)) { try { $pr.Kill() } catch { }; return $null }
+                Get-ChildItem -LiteralPath $exeDir -Filter 'CustomProfiles_*.nip' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            }
+            $readBase = {
+                param($file)
+                $cur = @{}
+                if (-not $file) { return $cur }
+                try {
+                    [xml]$x = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8
+                    foreach ($pf in @($x.ArrayOfProfile.Profile)) {
+                        if ($pf.ProfileName -ne 'Base Profile') { continue }
+                        foreach ($st in @($pf.Settings.ProfileSetting)) { $cur[[uint32]$st.SettingID] = [string]$st.SettingValue }
+                    }
+                } catch { }
+                return $cur
+            }
+            P 50 "Reading the current Base Profile"
+            $before = & $export
+            $cur = & $readBase $before
+            if ($before) {
+                $bk = Join-Path $docs 'CleanWindows-NvidiaProfiles-Backup.nip'
+                if (-not (Test-Path -LiteralPath $bk)) { Copy-Item -LiteralPath $before.FullName -Destination $bk -Force; L INFO "Backup of the original customized NVIDIA profiles: $bk" }
+                else { L INFO "Original NVIDIA profiles backup already exists (kept): $bk" }
+            } else { L INFO "Could not export the current NVIDIA profiles (no backup, state check falls back to the marker)" }
+
+            $sig = (@($wanted.Keys | ForEach-Object { '{0:X8}={1}' -f $_, $wanted[$_][1] }) -join ';')
+            $marker = 'HKCU:\Software\CleanWindows'
+            $todo = @($wanted.Keys | Where-Object { -not $cur.ContainsKey([uint32]$_) -or $cur[[uint32]$_] -ne [string]$wanted[$_][1] })
+            if ($before -and $todo.Count -eq 0) {
+                foreach ($k in $wanted.Keys) { Add-Same }
+                Set-Reg $marker 'NvidiaProfileApplied' $sig 'String'
+                P 100 "Already applied"; L SUCCESS "NVIDIA Base Profile settings already applied - skipped"; return
+            }
+            if (-not $before) {
+                $m = $null
+                try { $m = (Get-ItemProperty -LiteralPath $marker -Name 'NvidiaProfileApplied' -ErrorAction Stop).NvidiaProfileApplied } catch { }
+                if ($m -eq $sig) { Add-Same; P 100 "Already applied"; L SUCCESS "NVIDIA Base Profile settings already applied (marker) - skipped"; return }
+            }
+
+            P 65 "Writing the .nip file"
+            $sb = New-Object System.Text.StringBuilder
+            [void]$sb.AppendLine('<?xml version="1.0" encoding="utf-16"?>')
+            [void]$sb.AppendLine('<ArrayOfProfile>')
+            [void]$sb.AppendLine('  <Profile>')
+            [void]$sb.AppendLine('    <ProfileName>Base Profile</ProfileName>')
+            [void]$sb.AppendLine('    <Executeables />')
+            [void]$sb.AppendLine('    <Settings>')
+            foreach ($k in $wanted.Keys) {
+                [void]$sb.AppendLine('      <ProfileSetting>')
+                [void]$sb.AppendLine("        <SettingNameInfo>$($wanted[$k][0])</SettingNameInfo>")
+                [void]$sb.AppendLine("        <SettingID>$([uint32]$k)</SettingID>")
+                [void]$sb.AppendLine("        <SettingValue>$($wanted[$k][1])</SettingValue>")
+                [void]$sb.AppendLine('        <ValueType>Dword</ValueType>')
+                [void]$sb.AppendLine('      </ProfileSetting>')
+            }
+            [void]$sb.AppendLine('    </Settings>')
+            [void]$sb.AppendLine('  </Profile>')
+            [void]$sb.AppendLine('</ArrayOfProfile>')
+            $nip = Join-Path $tempDir 'CleanWindows-NvidiaGaming.nip'
+            [IO.File]::WriteAllText($nip, $sb.ToString(), [Text.Encoding]::Unicode)
+            Copy-Item -LiteralPath $nip -Destination (Join-Path $docs 'CleanWindows-NvidiaGaming.nip') -Force
+
+            # -silentImport = no UI; -mergeImport = only these settings change (default silent mode REPLACES the whole profile)
+            P 75 "Importing into the NVIDIA driver (silent merge)"
+            $pr = Start-Process -FilePath $exe.FullName -ArgumentList @('-silentImport', '-mergeImport', "`"$nip`"") -WorkingDirectory $exeDir -PassThru -WindowStyle Hidden
+            if (-not $pr.WaitForExit(120000)) { try { $pr.Kill() } catch { }; L WARNING "NVIDIA Profile Inspector import timed out"; P 100 "Failed"; return }
+
+            P 88 "Verifying"
+            $after = & $readBase (& $export)
+            $bad = @($wanted.Keys | Where-Object { $after[[uint32]$_] -ne [string]$wanted[$_][1] })
+            if ($after.Count -gt 0 -and $bad.Count -eq 0) {
+                foreach ($k in $todo) { Add-Changed }
+                foreach ($k in @($wanted.Keys | Where-Object { $todo -notcontains $_ })) { Add-Same }
+                Set-Reg $marker 'NvidiaProfileApplied' $sig 'String'
+                P 100 "Done"; L SUCCESS "NVIDIA Base Profile: Prefer maximum performance, Low Latency Mode On, Shader Cache Unlimited ($($todo.Count) setting(s) changed)"
+            } elseif ($after.Count -eq 0) {
+                Add-Changed; Set-Reg $marker 'NvidiaProfileApplied' $sig 'String'
+                P 100 "Done"; L WARNING "NVIDIA settings imported (exit code $($pr.ExitCode)) but could not be read back - check them in NVIDIA Profile Inspector"
+            } else {
+                P 100 "Partial"; L WARNING ("NVIDIA settings not confirmed after import: " + (@($bad | ForEach-Object { $wanted[$_][0] }) -join ', '))
+            }
+        } catch { L WARNING "NVIDIA Profile Inspector settings failed: $($_.Exception.Message)" }
+    } },
+
     # Sound: Windows spatial audio format OFF + no automatic volume ducking during calls
     @{ Name = "Sound - Disable Windows Spatial Audio"; Script = {
         param($tempDir)
@@ -2917,6 +3048,36 @@ if ($launcherTasks.Count -gt 0) {
         Write-Host "Game launchers will be installed." -ForegroundColor Green
     }
     Write-Log "Game launchers: $wantLaunchers"
+    if ($selected.Count -eq 0) { Write-Host "No task left to run." -ForegroundColor Yellow; Read-Host "Press Enter to close"; Exit }
+}
+
+# NVIDIA Profile Inspector tweaks: asked at startup (unless -NvidiaProfile Yes / No was given), only if an NVIDIA GPU is present
+$nvProfileRx = '^NVIDIA - Profile Inspector Gaming Settings$'
+$nvProfileTasks = @($selected | Where-Object { $_.Name -match $nvProfileRx })
+if ($nvProfileTasks.Count -gt 0) {
+    $hasNvidia = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'NVIDIA' -or $_.PNPDeviceID -match 'VEN_10DE' }).Count -gt 0
+    $wantNvProfile = $NvidiaProfile
+    if (-not $hasNvidia) {
+        $wantNvProfile = 'No'
+        Write-Log "NVIDIA Profile Inspector: no NVIDIA GPU detected - task removed"
+    } elseif ($wantNvProfile -eq 'Ask') {
+        Write-Host ""
+        Write-Host "NVIDIA Profile Inspector (global driver profile):" -ForegroundColor Cyan
+        Write-Host "  - Power management mode: Prefer maximum performance" -ForegroundColor Gray
+        Write-Host "  - Low Latency Mode: On" -ForegroundColor Gray
+        Write-Host "  - Shader Cache size: Unlimited (fewer stutters while games load)" -ForegroundColor Gray
+        do {
+            $ans = ([string](Read-Host "Apply NVIDIA Profile Inspector optimizations (max performance, low latency, unlimited shader cache)? [Y/N]")).Trim().ToUpperInvariant()
+        } while ($ans -notin @('Y', 'YES', 'N', 'NO', 'O', 'OUI'))
+        $wantNvProfile = if ($ans -in @('Y', 'YES', 'O', 'OUI')) { 'Yes' } else { 'No' }
+    }
+    if ($wantNvProfile -eq 'No') {
+        $selected = @($selected | Where-Object { $_.Name -notmatch $nvProfileRx })
+        if ($hasNvidia) { Write-Host "NVIDIA Profile Inspector optimizations will NOT be applied." -ForegroundColor Yellow }
+    } else {
+        Write-Host "NVIDIA Profile Inspector optimizations will be applied." -ForegroundColor Green
+    }
+    Write-Log "NVIDIA Profile Inspector: $wantNvProfile"
     if ($selected.Count -eq 0) { Write-Host "No task left to run." -ForegroundColor Yellow; Read-Host "Press Enter to close"; Exit }
 }
 

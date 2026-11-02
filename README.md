@@ -63,7 +63,7 @@ Each task runs in its own job with a timeout (5 minutes by default, longer for d
 - MSI Mode (GPU)
 - Power Plan - Gaming (Ultimate Performance)
 - Theme Black (Full Dark Everywhere)
-- Windows Performance (Gaming + No Animations)
+- Windows Performance (Gaming + No Animations, foreground CPU priority, Fast Startup off)
 - Mouse Optimization (no acceleration, 1:1)
 - Explorer Optimization (This PC + no history)
 - Edge / WebView2 - Gaming Optimization
@@ -75,6 +75,7 @@ Each task runs in its own job with a timeout (5 minutes by default, longer for d
 - Install Escape From Tarkov Launcher, Steam, VLC, Plex, Google Chrome, Discord (with gaming optimization: no auto-start, no tray, caches cleared), NanaZip, Notepad++
 - Gaming Runtimes (legacy VC++ + .NET)
 - NVIDIA - Install NVCleanstall / Download latest Game Ready driver / Debloated driver install / Control Panel
+- NVIDIA - Profile Inspector Gaming Settings (optional, asked at startup)
 - Sound - Disable Windows Spatial Audio
 - Network Optimization (Gaming IPv4)
 - Services Optimization (Gaming)
@@ -100,9 +101,32 @@ If an NVIDIA card is detected, the script:
 1. installs **NVCleanstall** (TechPowerUp) for manual use: it has no automatic mode;
 2. downloads the **latest Game Ready driver** from NVIDIA;
 3. installs it as a **slimmed-down** build (display driver + HDMI/DP audio + PhysX, without GeForce Experience, NVIDIA App or telemetry), the way NVCleanstall does;
-4. installs the **NVIDIA Control Panel** (Microsoft Store).
+4. installs the **NVIDIA Control Panel** (Microsoft Store);
+5. optionally applies **NVIDIA Profile Inspector** tweaks to the global driver profile (*Base Profile*), see below.
 
-No questions are asked. The NVIDIA tasks are skipped if there is no NVIDIA card.
+The NVIDIA tasks are skipped if there is no NVIDIA card.
+
+### NVIDIA Profile Inspector
+
+At startup the script asks once: **Apply NVIDIA Profile Inspector optimizations (max performance, low latency, unlimited shader cache)? [Y/N]**.
+The question is not asked when no NVIDIA card is detected or when `-Only` / `-Skip` already excludes the task.
+Answer `N` to skip it. To skip the question, pass `-NvidiaProfile Yes` or `-NvidiaProfile No`.
+
+The latest [NVIDIA Profile Inspector](https://github.com/Orbmu2k/nvidiaProfileInspector) release is downloaded from its official
+GitHub releases and these settings are merged into the *Base Profile* (`-silentImport -mergeImport`: other settings are kept):
+
+| Setting | ID | Value |
+|---|---|---|
+| Power management mode | `0x1057EB71` | Prefer maximum performance (1) |
+| Maximum pre-rendered frames (Low Latency Mode) | `0x007BA09E` | 1 |
+| Ultra Low Latency - CPL State | `0x0005F543` | On (1) |
+| Ultra Low Latency - Enabled | `0x10835000` | 0 (Low Latency Mode *On*, not *Ultra*) |
+| Shader Cache - Cache Size | `0x00AC8497` | Unlimited (`0xFFFFFFFF`) |
+
+Current values are read first (export of the customized profiles); nothing is imported if they are already set.
+A backup of the original customized profiles (`CleanWindows-NvidiaProfiles-Backup.nip`) and the imported file
+(`CleanWindows-NvidiaGaming.nip`) are kept in `Documents\CleanWindows`. To undo, restore the Base Profile in
+NVIDIA Profile Inspector. A clean driver reinstall also resets these settings.
 
 ## Game launchers
 
