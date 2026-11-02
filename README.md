@@ -138,23 +138,25 @@ how many were **already set**; a task with nothing to change is shown as `ALREAD
 
 ## Generated reports
 
+All files are written to a single folder, `Documents\CleanWindows`. At the end of the run, the script opens it in File Explorer with the summary selected (files from older versions are moved there automatically).
+
 | File | Contents |
 |---|---|
-| `Desktop\CLEANWINDOWS-SUMMARY.TXT` | Tasks, durations, final state check, before → now measurements, warnings/errors |
+| `Documents\CleanWindows\CLEANWINDOWS-SUMMARY.TXT` | Tasks, durations, final state check, before → now measurements, warnings/errors |
 | `Desktop\CLEANWINDOWS-AFTER-REBOOT.TXT` | Before → after reboot comparison (created automatically ~2 min 30 s after the next sign-in) |
-| `Documents\CLEANWINDOWSLOG.TXT` | Full log |
-| `Documents\CleanWindows-Baseline.json` | Initial measurement (kept across re-runs) |
-| `Documents\CleanWindows-RestoreServices.ps1` | Restores the disabled services |
-| `Documents\CleanWindows-ServicesBaseline.json` | Original service start values (recorded on the first run, kept across re-runs) |
-| `Documents\CleanWindows-RemovedGhostDevices.csv` | Removed ghost devices |
+| `Documents\CleanWindows\CLEANWINDOWSLOG.TXT` | Full log |
+| `Documents\CleanWindows\CleanWindows-Baseline.json` | Initial measurement (kept across re-runs) |
+| `Documents\CleanWindows\CleanWindows-RestoreServices.ps1` | Restores the disabled services |
+| `Documents\CleanWindows\CleanWindows-ServicesBaseline.json` | Original service start values (recorded on the first run, kept across re-runs) |
+| `Documents\CleanWindows\CleanWindows-RemovedGhostDevices.csv` | Removed ghost devices |
 
 On a **laptop**, the script leaves battery settings, hibernation and device power saving unchanged.
 
 ## After the run
 
-- Summary (tasks, durations, final state check, warnings): `Desktop\CLEANWINDOWS-SUMMARY.TXT`
-- Full log: `Documents\CLEANWINDOWSLOG.TXT`
-- Services restore script: `Documents\CleanWindows-RestoreServices.ps1`
+- Summary (tasks, durations, final state check, warnings): `Documents\CleanWindows\CLEANWINDOWS-SUMMARY.TXT`
+- Full log: `Documents\CleanWindows\CLEANWINDOWSLOG.TXT`
+- Services restore script: `Documents\CleanWindows\CleanWindows-RestoreServices.ps1`
 - Reboot the PC at the end.
 
 ## Settings at the top of the script

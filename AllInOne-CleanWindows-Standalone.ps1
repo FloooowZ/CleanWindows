@@ -4,8 +4,10 @@
 #   (if it hangs, it is killed and the script moves on to the next one).
 # - 100% silent installs (no windows, no console output).
 # - Overall progress bar + per-task progress bar (in %).
-# - Full log: Documents\CLEANWINDOWSLOG.TXT
-# - Summary (tasks, durations, warnings/errors): Desktop\CLEANWINDOWS-SUMMARY.TXT
+# - All output files (log, summary, backups, restore script) go to Documents\CleanWindows,
+#   which is opened in File Explorer at the end of the run.
+# - Full log: Documents\CleanWindows\CLEANWINDOWSLOG.TXT
+# - Summary (tasks, durations, warnings/errors): Documents\CleanWindows\CLEANWINDOWS-SUMMARY.TXT
 # - Options: -List (lists the tasks) | -Only "NVIDIA,Services" | -Skip "Plex,Final Cleanup"
 # - After reboot: Desktop\CLEANWINDOWS-AFTER-REBOOT.TXT (before / after comparison)
 # =============================================================================
@@ -60,6 +62,17 @@ $ProgressPreference = 'Continue'   # Required to display the progress bars
 # === Logging (file only: the console stays clean) ===
 $docs = [Environment]::GetFolderPath('MyDocuments')
 if (-not $docs) { $docs = Join-Path $env:USERPROFILE 'Documents' }
+$docsRoot = $docs
+$docs = Join-Path $docsRoot 'CleanWindows'   # single folder for logs, backups and reports
+try { if (-not (Test-Path -LiteralPath $docs)) { New-Item -ItemType Directory -Path $docs -Force | Out-Null } } catch { }
+# Older versions wrote these files directly in Documents: move them into the CleanWindows folder (baselines are kept)
+foreach ($oldName in 'CLEANWINDOWSLOG.TXT', 'CleanWindows-Baseline.json', 'CleanWindows-ServicesBaseline.json', 'CleanWindows-RestoreServices.ps1', 'CleanWindows-RemovedGhostDevices.csv', 'CleanWindows-PostReboot.ps1') {
+    $oldPath = Join-Path $docsRoot $oldName
+    $newPath = Join-Path $docs $oldName
+    if ((Test-Path -LiteralPath $oldPath) -and -not (Test-Path -LiteralPath $newPath)) { try { Move-Item -LiteralPath $oldPath -Destination $newPath -Force } catch { } }
+}
+$oldSummary = Join-Path ([Environment]::GetFolderPath('Desktop')) 'CLEANWINDOWS-SUMMARY.TXT'
+if (Test-Path -LiteralPath $oldSummary) { try { Remove-Item -LiteralPath $oldSummary -Force } catch { } }
 $logPath = Join-Path $docs "CLEANWINDOWSLOG.TXT"
 $tempDir = Join-Path $env:TEMP "CleanWindows"
 
@@ -2133,7 +2146,8 @@ $Tasks = @(
 
             # Original Start values are kept in a JSON baseline: recorded on the first run only, never overwritten,
             # so the restore script stays complete even after re-runs.
-            $docs = [Environment]::GetFolderPath('MyDocuments')
+            $docs = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'CleanWindows'
+            if (-not (Test-Path -LiteralPath $docs)) { New-Item -ItemType Directory -Path $docs -Force | Out-Null }
             $baseFile = Join-Path $docs 'CleanWindows-ServicesBaseline.json'
             $restore = Join-Path $docs 'CleanWindows-RestoreServices.ps1'
             $base = [ordered]@{}
@@ -2205,7 +2219,7 @@ $Tasks = @(
             try { Set-Content -LiteralPath $restore -Value $backup -Encoding UTF8; L INFO "Restore script written: $restore ($($backup.Count - 1) service(s))" } catch { L WARNING "Could not write the restore script" }
 
             P 100 "Done"
-            L SUCCESS "Services: $changed disabled, $already already off, $absent not present, $failed protected. Restore script: Documents\CleanWindows-RestoreServices.ps1. Reboot to apply fully"
+            L SUCCESS "Services: $changed disabled, $already already off, $absent not present, $failed protected. Restore script: Documents\CleanWindows\CleanWindows-RestoreServices.ps1. Reboot to apply fully"
         } catch { L ERROR "Services optimization failed: $($_.Exception.Message)" }
     } },
 
@@ -2453,7 +2467,9 @@ $Tasks = @(
             $removed = 0; $failed = 0
             if ($ghosts.Count -gt 0) {
                 # List kept: a removed device reinstalls itself next time it is plugged in
-                $csv = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'CleanWindows-RemovedGhostDevices.csv'
+                $csvDir = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'CleanWindows'
+                if (-not (Test-Path -LiteralPath $csvDir)) { New-Item -ItemType Directory -Path $csvDir -Force | Out-Null }
+                $csv = Join-Path $csvDir 'CleanWindows-RemovedGhostDevices.csv'
                 try { $ghosts | Select-Object Class, FriendlyName, InstanceId | Export-Csv -LiteralPath $csv -NoTypeInformation -Encoding UTF8; L INFO "Removed-device list saved: $csv" } catch { }
                 $i = 0
                 foreach ($d in $ghosts) {
@@ -2751,8 +2767,7 @@ if ($bad.Count -eq 0) {
 # Ready-to-send summary (tasks, durations, warnings / errors)
 $resumePath = $null
 try {
-    $desk = [Environment]::GetFolderPath('Desktop')
-    $resumePath = Join-Path $desk 'CLEANWINDOWS-SUMMARY.TXT'
+    $resumePath = Join-Path $docs 'CLEANWINDOWS-SUMMARY.TXT'
     $out = New-Object 'System.Collections.Generic.List[string]'
     $out.Add("All-In-One Clean Windows - summary - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
     $out.Add("Total duration: $([int]((Get-Date) - $script:RunStart).TotalMinutes) min | Full log: $script:ActiveLog")
@@ -2820,6 +2835,12 @@ try {
 Write-Host "Full log: $script:ActiveLog" -ForegroundColor Gray
 if ($resumePath) { Write-Host "Summary (send me this file if something failed): $resumePath" -ForegroundColor White }
 Write-Host "After the next reboot, a before/after comparison appears on your Desktop (CLEANWINDOWS-AFTER-REBOOT.TXT)." -ForegroundColor Gray
+# Open File Explorer on the CleanWindows folder (log, summary, backups, restore script), summary selected
+try {
+    Write-Host "Opening the CleanWindows folder (logs, backups, reports): $docs" -ForegroundColor Cyan
+    if ($resumePath -and (Test-Path -LiteralPath $resumePath)) { Start-Process -FilePath 'explorer.exe' -ArgumentList ('/select,"{0}"' -f $resumePath) }
+    else { Start-Process -FilePath 'explorer.exe' -ArgumentList ('"{0}"' -f $docs) }
+} catch { }
 Write-Host ""
 Read-Host "Press Enter to close"
 
