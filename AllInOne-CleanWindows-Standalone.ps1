@@ -15,7 +15,9 @@
 param(
     [string]$Only = '',   # e.g. -Only "NVIDIA,Services": only runs tasks whose name contains one of these words
     [string]$Skip = '',   # e.g. -Skip "Plex,Final Cleanup": skips these tasks
-    [switch]$List         # shows the task list (numbers / names) then exits
+    [switch]$List,        # shows the task list (numbers / names) then exits
+    [ValidateSet('Ask','Yes','No')]
+    [string]$Launchers = 'Ask'   # game launchers (Steam, Escape From Tarkov): Ask = question at startup, Yes = install, No = skip
 )
 
 # === Admin elevation (automatic relaunch as Administrator, with Bypass) ===
@@ -36,6 +38,7 @@ if (-not $isAdmin) {
         if ($Only) { $fwd += ' -Only "' + ($Only -replace '"', '') + '"' }
         if ($Skip) { $fwd += ' -Skip "' + ($Skip -replace '"', '') + '"' }
         if ($List) { $fwd += ' -List' }
+        if ($Launchers -ne 'Ask') { $fwd += ' -Launchers ' + $Launchers }
         Start-Process PowerShell.exe -ArgumentList (("-NoProfile -ExecutionPolicy Bypass -File `"{0}`"" -f $PSCommandPath) + $fwd) -Verb RunAs -ErrorAction Stop
     } catch {
         Write-Host "Administrator rights are required (UAC was refused). Exiting." -ForegroundColor Red
@@ -2765,6 +2768,31 @@ if ($selected.Count -eq 0) {
     Read-Host "Press Enter to close"
     Exit
 }
+# Game launchers: asked at startup (unless -Launchers Yes / No was given)
+$launcherRx = '^Install (Steam|Escape From Tarkov Launcher)$'
+$launcherTasks = @($selected | Where-Object { $_.Name -match $launcherRx })
+if ($launcherTasks.Count -gt 0) {
+    $wantLaunchers = $Launchers
+    if ($wantLaunchers -eq 'Ask') {
+        Write-Host ""
+        Write-Host "Do you want to install the game launchers?" -ForegroundColor Cyan
+        foreach ($lt in $launcherTasks) { Write-Host ("  - " + ($lt.Name -replace '^Install ', '')) -ForegroundColor Gray }
+        Write-Host "(launchers that are already installed are skipped anyway)" -ForegroundColor DarkGray
+        do {
+            $ans = ([string](Read-Host "Install game launchers? [Y/N]")).Trim().ToUpperInvariant()
+        } while ($ans -notin @('Y', 'YES', 'N', 'NO', 'O', 'OUI'))
+        $wantLaunchers = if ($ans -in @('Y', 'YES', 'O', 'OUI')) { 'Yes' } else { 'No' }
+    }
+    if ($wantLaunchers -eq 'No') {
+        $selected = @($selected | Where-Object { $_.Name -notmatch $launcherRx })
+        Write-Host "Game launchers will NOT be installed." -ForegroundColor Yellow
+    } else {
+        Write-Host "Game launchers will be installed." -ForegroundColor Green
+    }
+    Write-Log "Game launchers: $wantLaunchers"
+    if ($selected.Count -eq 0) { Write-Host "No task left to run." -ForegroundColor Yellow; Read-Host "Press Enter to close"; Exit }
+}
+
 if ($selected.Count -ne $Tasks.Count) { Write-Log "Task selection: $($selected.Count) of $($Tasks.Count) (Only='$Only' Skip='$Skip')" }
 
 

@@ -105,6 +105,12 @@ If an NVIDIA card is detected, the script:
 
 No questions are asked. The NVIDIA tasks are skipped if there is no NVIDIA card.
 
+## Game launchers
+
+At startup the script asks once: **Install game launchers? [Y/N]** (Steam and the Escape From Tarkov launcher). Answer `N` to skip them; launchers that are already installed are skipped either way.
+
+To skip the question, pass `-Launchers Yes` or `-Launchers No`.
+
 ## Power plan
 
 The script keeps **one single plan**: *Gaming - Ultimate Performance* (a copy of Ultimate Performance, or High
