@@ -2513,7 +2513,7 @@ $Tasks = @(
             Invoke-Proc 'dism.exe' '/Online /Cleanup-Image /StartComponentCleanup /NoRestart' '' 3 95 'Cleaning the component store' 150
             $code = $global:LastExitCode2
             P 100 "Done"
-            $hex = '0x{0:X8}' -f ([int64]$code -band 0xFFFFFFFF)
+            $hex = '0x{0:X8}' -f [int32]$code
             if ($code -in 0, 3010) { L SUCCESS "Component store cleaned (DISM exit code $code)" }
             elseif ($hex -eq '0x800F0806') {
                 # CBS_E_PENDING: Windows has updates / component changes waiting for a reboot - not an error
