@@ -2153,12 +2153,32 @@ $Tasks = @(
         try {
             if (@(Get-NvidiaGpu).Count -eq 0) { P 100 "No NVIDIA GPU"; L SKIP "No NVIDIA GPU detected - skipped"; return }
             # Setting IDs / values from nvidiaProfileInspector CustomSettingNames.xml + NvApiDriverSettings.h (values are decimal in .nip files)
+            # User's NVIDIA Control Panel "Global settings" (driver defaults included explicitly so earlier changes get reset)
             $wanted = [ordered]@{
-                0x1057EB71 = @('Power management mode', 1)                  # 1 = Prefer maximum performance
-                0x007BA09E = @('Maximum pre-rendered frames', 1)            # 1 frame = Low Latency Mode "On"
-                0x0005F543 = @('Ultra Low Latency - CPL State', 1)          # 1 = "On" shown in the NVIDIA Control Panel
-                0x10835000 = @('Ultra Low Latency - Enabled', 0)            # 0 = "On" (1 would be "Ultra")
-                0x00AC8497 = @('Shader Cache - Cache Size', 4294967295)     # 0xFFFFFFFF = Unlimited
+                0x1074C972 = @('Antialiasing - FXAA Enabled', 0)                    # Off
+                0x107D639D = @('Antialiasing - Gamma Correction', 0)                # Off
+                0x107EFC5B = @('Antialiasing - Mode', 0)                            # Application-controlled
+                0x10D48A85 = @('Antialiasing - Transparency Supersampling', 0)      # Off
+                0x10FC2D9C = @('Antialiasing - Transparency Multisampling', 0)      # Off
+                0x0098C1AC = @('Antialiasing - MFAA Enabled', 0)                    # Off
+                0x10D2BB16 = @('Anisotropic Filtering - Mode', 0)                   # Application-controlled
+                0x0019BB68 = @('Texture Filtering - Negative LOD bias', 0)          # Allow
+                0x00E73211 = @('Anisotropic Filter - Sample Optimization', 1)       # On
+                0x00CE2691 = @('Texture Filtering - Quality', 20)                   # 0x14 = High performance
+                0x002ECAF2 = @('Texture Filtering - Trilinear Optimization', 1)     # 1 = Off (setting is "disable trilinear slope")
+                0x0064B541 = @('Preferred Refreshrate', 1)                          # Highest available
+                0x007BA09E = @('Maximum Pre-Rendered Frames', 0)                    # Use the 3D application setting (Low Latency Mode Off)
+                0x0005F543 = @('Ultra Low Latency - CPL State', 0)                  # Off
+                0x10835000 = @('Ultra Low Latency - Enabled', 0)                    # Off
+                0x1057EB71 = @('Power Management - Mode', 1)                        # Prefer maximum performance
+                0x10835002 = @('Frame Rate Limiter V3', 0)                          # Max frame rate: Off
+                0x10835005 = @('Frame Rate Limiter - Background Application', 0)   # Off
+                0x00667329 = @('Ambient Occlusion - Setting', 0)                    # Off
+                0x20C1221E = @('Threaded Optimization', 1)                          # On
+                0x00A879CF = @('Vertical Sync', 138503975)                          # 0x08416747 = Force off
+                0x00AC8497 = @('Shader Cache - Cache Size', 4294967295)             # 0xFFFFFFFF = Unlimited
+                0x10111133 = @('Virtual Reality pre-rendered frames', 1)            # 1
+                0x20FDD1F9 = @('Triple Buffering', 0)                               # Off
             }
             $docs = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'CleanWindows'
             if (-not (Test-Path -LiteralPath $docs)) { New-Item -ItemType Directory -Path $docs -Force | Out-Null }
@@ -2261,7 +2281,7 @@ $Tasks = @(
                 foreach ($k in $todo) { Add-Changed }
                 foreach ($k in @($wanted.Keys | Where-Object { $todo -notcontains $_ })) { Add-Same }
                 Set-Reg $marker 'NvidiaProfileApplied' $sig 'String'
-                P 100 "Done"; L SUCCESS "NVIDIA Base Profile: Prefer maximum performance, Low Latency Mode On, Shader Cache Unlimited ($($todo.Count) setting(s) changed)"
+                P 100 "Done"; L SUCCESS "NVIDIA Base Profile: gaming profile applied ($($wanted.Count) settings, $($todo.Count) changed)"
             } elseif ($after.Count -eq 0) {
                 Add-Changed; Set-Reg $marker 'NvidiaProfileApplied' $sig 'String'
                 P 100 "Done"; L WARNING "NVIDIA settings imported (exit code $($pr.ExitCode)) but could not be read back - check them in NVIDIA Profile Inspector"
@@ -3063,11 +3083,12 @@ if ($nvProfileTasks.Count -gt 0) {
     } elseif ($wantNvProfile -eq 'Ask') {
         Write-Host ""
         Write-Host "NVIDIA Profile Inspector (global driver profile):" -ForegroundColor Cyan
-        Write-Host "  - Power management mode: Prefer maximum performance" -ForegroundColor Gray
-        Write-Host "  - Low Latency Mode: On" -ForegroundColor Gray
-        Write-Host "  - Shader Cache size: Unlimited (fewer stutters while games load)" -ForegroundColor Gray
+        Write-Host "  - Power management mode: Prefer maximum performance, Threaded optimization: On" -ForegroundColor Gray
+        Write-Host "  - Texture filtering: High performance, V-Sync: Force off, Low Latency Mode: Off" -ForegroundColor Gray
+        Write-Host "  - AA / FXAA / MFAA / AO / frame limiters / triple buffering: Off (application-controlled)" -ForegroundColor Gray
+        Write-Host "  - Shader Cache size: Unlimited, Preferred refresh rate: Highest available" -ForegroundColor Gray
         do {
-            $ans = ([string](Read-Host "Apply NVIDIA Profile Inspector optimizations (max performance, low latency, unlimited shader cache)? [Y/N]")).Trim().ToUpperInvariant()
+            $ans = ([string](Read-Host "Apply NVIDIA gaming profile (max performance, high-performance texture filtering, V-Sync off, unlimited shader cache)? [Y/N]")).Trim().ToUpperInvariant()
         } while ($ans -notin @('Y', 'YES', 'N', 'NO', 'O', 'OUI'))
         $wantNvProfile = if ($ans -in @('Y', 'YES', 'O', 'OUI')) { 'Yes' } else { 'No' }
     }

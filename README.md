@@ -108,7 +108,7 @@ The NVIDIA tasks are skipped if there is no NVIDIA card.
 
 ### NVIDIA Profile Inspector
 
-At startup the script asks once: **Apply NVIDIA Profile Inspector optimizations (max performance, low latency, unlimited shader cache)? [Y/N]**.
+At startup the script asks once: **Apply NVIDIA gaming profile (max performance, high-performance texture filtering, V-Sync off, unlimited shader cache)? [Y/N]**.
 The question is not asked when no NVIDIA card is detected or when `-Only` / `-Skip` already excludes the task.
 Answer `N` to skip it. To skip the question, pass `-NvidiaProfile Yes` or `-NvidiaProfile No`.
 
@@ -117,11 +117,30 @@ GitHub releases and these settings are merged into the *Base Profile* (`-silentI
 
 | Setting | ID | Value |
 |---|---|---|
+| Antialiasing - FXAA | `0x1074C972` | Off (0) |
+| Antialiasing - Gamma correction | `0x107D639D` | Off (0) |
+| Antialiasing - Mode | `0x107EFC5B` | Application-controlled (0) |
+| Antialiasing - Transparency (supersampling / multisampling) | `0x10D48A85 / 0x10FC2D9C` | Off (0 / 0) |
+| MFAA | `0x0098C1AC` | Off (0) |
+| Anisotropic filtering - Mode | `0x10D2BB16` | Application-controlled (0) |
+| Texture filtering - Negative LOD bias | `0x0019BB68` | Allow (0) |
+| Texture filtering - Anisotropic sample optimization | `0x00E73211` | On (1) |
+| Texture filtering - Quality | `0x00CE2691` | High performance (20 = 0x14) |
+| Texture filtering - Trilinear optimization | `0x002ECAF2` | Off (1) |
+| Preferred refresh rate | `0x0064B541` | Highest available (1) |
+| Low Latency Mode: Maximum pre-rendered frames | `0x007BA09E` | Application setting (0) |
+| Low Latency Mode: Ultra Low Latency CPL state / enabled | `0x0005F543 / 0x10835000` | Off (0 / 0) |
 | Power management mode | `0x1057EB71` | Prefer maximum performance (1) |
-| Maximum pre-rendered frames (Low Latency Mode) | `0x007BA09E` | 1 |
-| Ultra Low Latency - CPL State | `0x0005F543` | On (1) |
-| Ultra Low Latency - Enabled | `0x10835000` | 0 (Low Latency Mode *On*, not *Ultra*) |
-| Shader Cache - Cache Size | `0x00AC8497` | Unlimited (`0xFFFFFFFF`) |
+| Max frame rate | `0x10835002` | Off (0) |
+| Max frame rate (background application) | `0x10835005` | Off (0) |
+| Ambient occlusion | `0x00667329` | Off (0) |
+| Threaded optimization | `0x20C1221E` | On (1) |
+| Vertical sync | `0x00A879CF` | Force off (0x08416747) |
+| Shader cache size | `0x00AC8497` | Unlimited (0xFFFFFFFF) |
+| Virtual reality pre-rendered frames | `0x10111133` | 1 |
+| Triple buffering | `0x20FDD1F9` | Off (0) |
+
+Left at the driver default (not written): NVIDIA Image Scaling (global display setting, not a profile setting), VR Super Sampling, CUDA settings, OpenGL GDI compatibility, DSR, OpenGL rendering GPU, Vulkan/OpenGL present method.
 
 Current values are read first (export of the customized profiles); nothing is imported if they are already set.
 A backup of the original customized profiles (`CleanWindows-NvidiaProfiles-Backup.nip`) and the imported file
