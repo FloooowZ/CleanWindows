@@ -478,8 +478,14 @@ $script:BarFull  = [string][char]0x2588   # full block
 $script:BarEmpty = [string][char]0x2591   # light shade
 $script:Spinner  = @('|', '/', '-', '\')
 function Get-ConsoleWidth {
-    try { $w = [Console]::WindowWidth; if ($w -gt 20) { return $w } } catch { }
-    return 100
+    # Smallest of window / buffer width (a line longer than the window wraps and breaks the in-place redraw)
+    $ws = @()
+    try { $ws += $Host.UI.RawUI.WindowSize.Width } catch { }
+    try { $ws += $Host.UI.RawUI.BufferSize.Width } catch { }
+    try { $ws += [Console]::WindowWidth } catch { }
+    $ws = @($ws | Where-Object { $_ -gt 20 })
+    if ($ws.Count -eq 0) { return 80 }
+    return [Math]::Min(140, ($ws | Measure-Object -Minimum).Minimum)
 }
 function Get-Bar {
     param([int]$Pct, [int]$Width = 20)
@@ -495,8 +501,12 @@ function Show-TaskLine {
     $pctS  = " {0,3}%  " -f $Pct
     $tailS = if ($Tail) { "  $Tail" } else { '' }
     $text  = if ($Msg) { "$Name - $Msg" } else { $Name }
-    $room  = $width - 1 - $head.Length - $bar.Length - $pctS.Length - $tailS.Length
-    if ($room -lt 10) { $room = 10 }
+    $room  = $width - 2 - $head.Length - $bar.Length - $pctS.Length - $tailS.Length
+    if ($room -lt 10) {
+        # Narrow window: shorter bar so the line still fits on one row
+        $bar  = Get-Bar $Pct 10
+        $room = [Math]::Max(5, $width - 2 - $head.Length - $bar.Length - $pctS.Length - $tailS.Length)
+    }
     if ($text.Length -gt $room) { $text = $text.Substring(0, $room - 3) + '...' }
     $text  = $text.PadRight($room)
     Write-Host "`r" -NoNewline
@@ -1775,24 +1785,107 @@ $Tasks = @(
         } catch { L ERROR "Chrome failed: $($_.Exception.Message)" }
     } },
 
-    # Discord (official installer, silent mode -s)
-    @{ Name = "Install Discord"; Script = {
+    # Discord (official installer, silent mode -s) + lightweight configuration for gaming
+    @{ Name = "Install Discord + Gaming Optimization"; Script = {
         param($tempDir)
         try {
-            if (Test-Path -LiteralPath "$env:LOCALAPPDATA\Discord\Update.exe") { P 100 "Already installed"; Add-Same; L SUCCESS "Discord already installed - skipped"; return }
-            $f = Join-Path $tempDir 'DiscordSetup.exe'
-            P 0 "Downloading"
-            Get-FileAny @('https://discord.com/api/downloads/distributions/app/installers/latest?channel=stable&platform=win&arch=x64') $f 0 40
-            Invoke-Installer $f '-s' 40 90
-            # Discord launches itself after install: close it
-            P 92 "Closing first launch"
-            for ($k = 0; $k -lt 20; $k++) {
-                if (Get-Process -Name 'Discord' -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 3; break }
-                Start-Sleep -Seconds 1
+            $dRoot    = Join-Path $env:LOCALAPPDATA 'Discord'
+            $dUpdate  = Join-Path $dRoot 'Update.exe'
+            $dData    = Join-Path $env:APPDATA 'discord'
+            $dSetFile = Join-Path $dData 'settings.json'
+            # Stops Discord AND its updater (only the Discord one): an updater still running = "InconsistentInstallerState"
+            function Stop-Discord {
+                Get-Process -Name 'Discord' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+                Get-Process -Name 'Update' -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path -like "$dRoot\*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 2
             }
-            Stop-Process -Name 'Discord' -Force -ErrorAction SilentlyContinue
-            if (Test-Path -LiteralPath "$env:LOCALAPPDATA\Discord\Update.exe") { L SUCCESS "Discord installed" }
-            else { L WARNING "Installer finished but Discord was not found in %LOCALAPPDATA%" }
+            # Reads / writes Discord's settings.json (UTF-8 WITHOUT BOM, otherwise Discord cannot read it)
+            function Get-DiscordSettings {
+                $o = $null
+                if (Test-Path -LiteralPath $dSetFile) { try { $o = Get-Content -LiteralPath $dSetFile -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop } catch { $o = $null } }
+                if (-not $o) { $o = New-Object psobject }
+                return $o
+            }
+            function Save-DiscordSettings($o) {
+                if (-not (Test-Path -LiteralPath $dData)) { New-Item -ItemType Directory -Path $dData -Force | Out-Null }
+                [IO.File]::WriteAllText($dSetFile, ($o | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+            }
+
+            if (Test-Path -LiteralPath $dUpdate) {
+                P 10 "Already installed"; Add-Same; L INFO "Discord already installed - install skipped"
+            } else {
+                P 0 "Closing Discord / updater"
+                Stop-Discord
+                # Skips the "host update" during the very first launch (removed again below): avoids the updater racing the installer
+                $tmp = Get-DiscordSettings
+                $tmp | Add-Member -NotePropertyName 'SKIP_HOST_UPDATE' -NotePropertyValue $true -Force
+                Save-DiscordSettings $tmp
+                $f = Join-Path $tempDir 'DiscordSetup.exe'
+                P 2 "Downloading"
+                Get-FileAny @('https://discord.com/api/downloads/distributions/app/installers/latest?channel=stable&platform=win&arch=x64') $f 2 35
+                Invoke-Installer $f '-s' 35 75
+                # Discord starts itself after the install and finishes setting up: let it finish, THEN close it
+                P 76 "Waiting for Discord first launch to finish"
+                $seen = $false; $calm = 0
+                for ($k = 0; $k -lt 90; $k++) {
+                    $dc = @(Get-Process -Name 'Discord' -ErrorAction SilentlyContinue)
+                    $up = @(Get-Process -Name 'Update' -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path -like "$dRoot\*" })
+                    if ($dc.Count -gt 0) { $seen = $true }
+                    if ($seen -and $up.Count -eq 0) { $calm++ } else { $calm = 0 }
+                    if ($calm -ge 10) { break }                 # 10 s with Discord up and no updater running
+                    if (-not $seen -and $k -ge 30) { break }    # Discord never started: nothing to wait for
+                    P (76 + [int]($k / 6)) ("Waiting for Discord first launch... {0}s" -f $k)
+                    Start-Sleep -Seconds 1
+                }
+                Stop-Discord
+                if (Test-Path -LiteralPath $dUpdate) { L SUCCESS "Discord installed" }
+                else { L WARNING "Installer finished but Discord was not found in %LOCALAPPDATA%"; return }
+            }
+
+            # === Gaming optimization (applied every run, only what differs) ===
+            P 92 "Optimizing Discord"
+            if (Get-Process -Name 'Discord' -ErrorAction SilentlyContinue) {
+                # Discord rewrites settings.json when it closes: it must be closed to apply the settings
+                L INFO "Discord was running: closed to apply its settings (start it again when needed)"
+                Stop-Discord
+            }
+            $o = Get-DiscordSettings
+            $want = [ordered]@{
+                OPEN_ON_STARTUP  = $false   # no auto-start with Windows (start it when you play)
+                MINIMIZE_TO_TRAY = $false   # closing the window really quits Discord (no hidden background process)
+                START_MINIMIZED  = $false
+            }
+            $dirty = $false
+            foreach ($k in $want.Keys) {
+                $cur = $o.PSObject.Properties[$k]
+                if ($cur -and $cur.Value -eq $want[$k]) { Add-Same }
+                else { $o | Add-Member -NotePropertyName $k -NotePropertyValue $want[$k] -Force; Add-Changed; $dirty = $true }
+            }
+            if ($o.PSObject.Properties['SKIP_HOST_UPDATE']) { $o.PSObject.Properties.Remove('SKIP_HOST_UPDATE'); $dirty = $true }   # normal updates again
+            if ($dirty) { Save-DiscordSettings $o; L INFO "Discord settings: no auto-start, no tray (closing = quit)" }
+
+            # Startup entry (Windows Run key + Task Manager > Startup)
+            $run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+            if ((Get-ItemProperty -LiteralPath $run -ErrorAction SilentlyContinue).Discord) {
+                Remove-ItemProperty -LiteralPath $run -Name 'Discord' -ErrorAction SilentlyContinue; Add-Changed; L INFO "Discord removed from Windows startup"
+            } else { Add-Same }
+
+            # Caches (rebuilt by Discord on demand): frees space and avoids a slow, bloated cache
+            P 96 "Clearing Discord caches"
+            $freed = 0
+            foreach ($cd in 'Cache', 'Code Cache', 'GPUCache', 'DawnCache', 'DawnGraphiteCache', 'DawnWebGPUCache') {
+                $cp = Join-Path $dData $cd
+                if (Test-Path -LiteralPath $cp) {
+                    try { $freed += (Get-ChildItem -LiteralPath $cp -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum } catch { }
+                    Remove-Item -LiteralPath $cp -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
+            if ($freed -gt 1MB) { L INFO ("Discord caches cleared: {0:N0} MB" -f ($freed / 1MB)) }
+            # Discord's "Reduced motion" follows Windows ("Sync with computer", on by default): the
+            # "Windows Performance" task turns Windows animations off, so Discord animations follow.
+            L INFO "In Discord (account settings, not stored on the PC): Accessibility > Reduced motion, Autoplay GIFs off, Animated emoji off; Game Overlay off; Advanced > Hardware acceleration ON"
+            P 100 "Done"
+            L SUCCESS "Discord optimized for gaming"
         } catch { L ERROR "Discord failed: $($_.Exception.Message)" }
     } },
 
