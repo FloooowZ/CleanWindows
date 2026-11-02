@@ -1609,7 +1609,10 @@ $Tasks = @(
                 # Widgets + Weather disabled (policy + taskbar)
                 @('HKLM:\SOFTWARE\Policies\Microsoft\Dsh', 'AllowNewsAndInterests', 0),
                 @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Feeds', 'EnableFeeds', 0),
-                @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Feeds', 'ShellFeedsTaskbarViewMode', 2)
+                @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Feeds', 'ShellFeedsTaskbarViewMode', 2),
+                # Microsoft Store not pinned to the taskbar (policy: Windows will not re-pin it; the app itself stays installed)
+                @($pol, 'NoPinningStoreToTaskbar', 1),
+                @('HKCU:\Software\Policies\Microsoft\Windows\Explorer', 'NoPinningStoreToTaskbar', 1)
             )
             $c0 = $global:CW_Changed
             $i = 0
@@ -1622,6 +1625,19 @@ $Tasks = @(
             }
             $polChanged = $global:CW_Changed - $c0
             if ($polChanged -gt 0) { foreach ($pn in 'Widgets', 'WidgetService') { Stop-Process -Name $pn -Force -ErrorAction SilentlyContinue } }
+
+            # Unpin Microsoft Store from the taskbar (checked: the "Unpin" verb only exists when it is pinned)
+            P 32 "Unpinning Microsoft Store from taskbar"
+            try {
+                $store = (New-Object -ComObject Shell.Application).NameSpace('shell:AppsFolder').Items() | Where-Object { $_.Path -eq 'Microsoft.WindowsStore_8wekyb3d8bbwe!App' } | Select-Object -First 1
+                $verb = $null
+                if ($store) { $verb = $store.Verbs() | Where-Object { ($_.Name -replace '&','') -match 'Unpin from taskbar|taskbar.*(Unpin|Detach)|barre des t.ches.*(pingler)|pingler.*barre des t.ches' } | Select-Object -First 1 }
+                if ($verb) {
+                    $verb.DoIt()
+                    Add-Changed
+                    L SUCCESS "Microsoft Store unpinned from taskbar"
+                } else { L INFO "Microsoft Store was not pinned to the taskbar" }
+            } catch { L INFO "Microsoft Store taskbar unpin skipped: $($_.Exception.Message)" }
 
             # Unpin EVERYTHING (only once: marker HKCU:\Software\CleanWindows\StartPinsReset): delete the user's pin files;
             # with the "empty list" policy above, Windows regenerates them EMPTY (new users included).
