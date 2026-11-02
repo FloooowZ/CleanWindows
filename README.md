@@ -73,7 +73,6 @@ Each task runs in its own job with a timeout (5 minutes by default, longer for d
 - Taskbar - End Task in right-click menu
 - Ensure winget (App Installer)
 - Install Escape From Tarkov Launcher, Steam, VLC, Plex, Google Chrome, Discord, NanaZip, Notepad++
-- Install MSI Afterburner + RTSS (FPS only)
 - Gaming Runtimes (legacy VC++ + .NET)
 - NVIDIA - Install NVCleanstall / Download latest Game Ready driver / Debloated driver install / Control Panel
 - Sound - Disable Windows Spatial Audio
