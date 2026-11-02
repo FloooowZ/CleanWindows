@@ -1823,18 +1823,42 @@ $Tasks = @(
                 $f = Join-Path $tempDir 'DiscordSetup.exe'
                 P 2 "Downloading"
                 Get-FileAny @('https://discord.com/api/downloads/distributions/app/installers/latest?channel=stable&platform=win&arch=x64') $f 2 35
-                Invoke-Installer $f '-s' 35 75
+                Test-InstallerFile $f
+                # Discord is a per-user app: installed (and first launched) as ADMINISTRATOR it breaks with
+                # "InconsistentInstallerState". So it is installed WITHOUT elevation, as the signed-in user,
+                # through a one-shot scheduled task (RunLevel Limited).
+                $tn = 'CleanWindows-DiscordSetup'
+                $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+                Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction SilentlyContinue
+                $act = New-ScheduledTaskAction -Execute $f -Argument '-s'
+                $prn = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
+                $set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+                Register-ScheduledTask -TaskName $tn -Action $act -Principal $prn -Settings $set -Force | Out-Null
+                Start-ScheduledTask -TaskName $tn
+                P 36 "Installing (as the signed-in user, not as admin)"
+                $sw2 = [Diagnostics.Stopwatch]::StartNew()
+                Start-Sleep -Seconds 3
+                while ($sw2.Elapsed.TotalSeconds -lt 300) {
+                    $st = (Get-ScheduledTask -TaskName $tn -ErrorAction SilentlyContinue).State
+                    if ($st -ne 'Running') { break }
+                    P (36 + [int](39 * (1 - [math]::Exp(-$sw2.Elapsed.TotalSeconds / 30)))) ("Silent install... {0}s" -f [int]$sw2.Elapsed.TotalSeconds)
+                    Start-Sleep -Seconds 1
+                }
+                $res = (Get-ScheduledTaskInfo -TaskName $tn -ErrorAction SilentlyContinue).LastTaskResult
+                Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction SilentlyContinue
+                L INFO "Discord installer finished as $user (result: $res)"
+                Add-Changed
                 # Discord starts itself after the install and finishes setting up: let it finish, THEN close it
                 P 76 "Waiting for Discord first launch to finish"
                 $seen = $false; $calm = 0
-                for ($k = 0; $k -lt 90; $k++) {
+                for ($k = 0; $k -lt 150; $k++) {
                     $dc = @(Get-Process -Name 'Discord' -ErrorAction SilentlyContinue)
                     $up = @(Get-Process -Name 'Update' -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path -like "$dRoot\*" })
                     if ($dc.Count -gt 0) { $seen = $true }
                     if ($seen -and $up.Count -eq 0) { $calm++ } else { $calm = 0 }
-                    if ($calm -ge 10) { break }                 # 10 s with Discord up and no updater running
+                    if ($calm -ge 15) { break }                 # 15 s with Discord up and no updater running
                     if (-not $seen -and $k -ge 30) { break }    # Discord never started: nothing to wait for
-                    P (76 + [int]($k / 6)) ("Waiting for Discord first launch... {0}s" -f $k)
+                    P (76 + [int]($k / 10)) ("Waiting for Discord first launch... {0}s" -f $k)
                     Start-Sleep -Seconds 1
                 }
                 Stop-Discord
