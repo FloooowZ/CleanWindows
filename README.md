@@ -76,7 +76,6 @@ Each task runs in its own job with a timeout (5 minutes by default, longer for d
 - Install MSI Afterburner + RTSS (FPS only)
 - Gaming Runtimes (legacy VC++ + .NET)
 - NVIDIA - Install NVCleanstall / Download latest Game Ready driver / Debloated driver install / Control Panel
-- Display Mode (2560x1440 @ up to 180 Hz)
 - Sound - Disable Windows Spatial Audio
 - Network Optimization (Gaming IPv4)
 - Services Optimization (Gaming)
@@ -105,7 +104,6 @@ If an NVIDIA card is detected, the script:
 4. installs the **NVIDIA Control Panel** (Microsoft Store).
 
 No questions are asked. The NVIDIA tasks are skipped if there is no NVIDIA card.
-A separate task sets the display to 2560x1440 at the highest refresh rate up to 180 Hz (no effect if the monitor lacks this mode; use `-Skip "Display Mode"` to skip it).
 
 ## Generated reports
 

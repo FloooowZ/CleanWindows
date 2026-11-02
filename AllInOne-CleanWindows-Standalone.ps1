@@ -1864,54 +1864,6 @@ $Tasks = @(
         } catch { L ERROR "NVIDIA Control Panel failed: $($_.Exception.Message)" }
     } },
 
-    # Display: 2560x1440 at the highest offered refresh rate (up to 180 Hz); no effect if the monitor lacks this mode
-    @{ Name = "Display Mode (2560x1440 @ up to 180 Hz)"; Script = {
-        param($tempDir)
-        try {
-            P 20 "Setting display mode 2560x1440 @ up to 180 Hz"
-                if (-not ('CleanWin.Display' -as [type])) {
-                    $cs = @(
-                        'using System; using System.Runtime.InteropServices;',
-                        'namespace CleanWin { public static class Display {',
-                        '[StructLayout(LayoutKind.Sequential)] public struct DEVMODE {',
-                        '[MarshalAs(UnmanagedType.ByValTStr, SizeConst=32)] public string dmDeviceName;',
-                        'public short dmSpecVersion; public short dmDriverVersion; public short dmSize; public short dmDriverExtra; public int dmFields;',
-                        'public int dmPositionX; public int dmPositionY; public int dmDisplayOrientation; public int dmDisplayFixedOutput;',
-                        'public short dmColor; public short dmDuplex; public short dmYResolution; public short dmTTOption; public short dmCollate;',
-                        '[MarshalAs(UnmanagedType.ByValTStr, SizeConst=32)] public string dmFormName;',
-                        'public short dmLogPixels; public int dmBitsPerPel; public int dmPelsWidth; public int dmPelsHeight; public int dmDisplayFlags; public int dmDisplayFrequency;',
-                        'public int dmICMMethod; public int dmICMIntent; public int dmMediaType; public int dmDitherType; public int dmReserved1; public int dmReserved2; public int dmPanningWidth; public int dmPanningHeight; }',
-                        '[DllImport("user32.dll", CharSet=CharSet.Ansi)] static extern bool EnumDisplaySettings(string dev, int mode, ref DEVMODE dm);',
-                        '[DllImport("user32.dll", CharSet=CharSet.Ansi)] static extern int ChangeDisplaySettingsEx(string dev, ref DEVMODE dm, IntPtr hwnd, int flags, IntPtr lp);',
-                        'public static string SetBest(int w, int h, int maxHz) {',
-                        'DEVMODE m = new DEVMODE(); m.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE)); int best = 0; int i = 0;',
-                        'while (EnumDisplaySettings(null, i, ref m)) { if (m.dmPelsWidth == w && m.dmPelsHeight == h && m.dmBitsPerPel >= 32 && m.dmDisplayFrequency <= maxHz && m.dmDisplayFrequency > best) best = m.dmDisplayFrequency; i++; }',
-                        'if (best == 0) return "NOMODE";',
-                        'DEVMODE cur = new DEVMODE(); cur.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));',
-                        'if (!EnumDisplaySettings(null, -1, ref cur)) return "NOCURRENT";',
-                        'if (cur.dmPelsWidth == w && cur.dmPelsHeight == h && cur.dmDisplayFrequency == best) return "ALREADY:" + best;',
-                        'cur.dmPelsWidth = w; cur.dmPelsHeight = h; cur.dmDisplayFrequency = best; cur.dmFields = 0x80000 | 0x100000 | 0x400000;',
-                        'int r = ChangeDisplaySettingsEx(null, ref cur, IntPtr.Zero, 1, IntPtr.Zero);',
-                        'return r == 0 ? "OK:" + best : "ERR:" + r; } } }'
-                    ) -join "`n"
-                    Add-Type -TypeDefinition $cs -Language CSharp
-                }
-                $res = [CleanWin.Display]::SetBest(2560, 1440, 180)
-                switch -Wildcard ($res) {
-                    'OK:*'      { L INFO "Display set to 2560x1440 @ $($res.Substring(3)) Hz" }
-                    'ALREADY:*' { L INFO "Display already at 2560x1440 @ $($res.Substring(8)) Hz" }
-                    'NOMODE'    { P 100 "No 2K mode"; L SKIP "The display does not offer a 2560x1440 mode - resolution left unchanged"; return }
-                    default     { L WARNING "Display mode not changed ($res)" }
-                }
-                if ($res -like 'OK:*' -or $res -like 'ALREADY:*') {
-                    $hz = [int]($res.Split(':')[1])
-                    if ($hz -lt 180) { L WARNING "Highest available refresh rate at 2560x1440 is $hz Hz (not 180 Hz) - check cable (DisplayPort recommended) / monitor OSD" }
-                }
-            P 100 "Done"
-            L SUCCESS "Display mode checked (2560x1440, highest refresh rate up to 180 Hz)"
-        } catch { L ERROR "Display mode failed: $($_.Exception.Message.Split("`n")[0])" }
-    } },
-
     # Sound: Windows spatial audio format OFF + no automatic volume ducking during calls
     @{ Name = "Sound - Disable Windows Spatial Audio"; Script = {
         param($tempDir)
