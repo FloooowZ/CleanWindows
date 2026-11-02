@@ -1811,60 +1811,70 @@ $Tasks = @(
                 [IO.File]::WriteAllText($dSetFile, ($o | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
             }
 
-            if (Test-Path -LiteralPath $dUpdate) {
-                P 10 "Already installed"; Add-Same; L INFO "Discord already installed - install skipped"
-            } else {
-                P 0 "Closing Discord / updater"
-                Stop-Discord
-                # Skips the "host update" during the very first launch (removed again below): avoids the updater racing the installer
-                $tmp = Get-DiscordSettings
-                $tmp | Add-Member -NotePropertyName 'SKIP_HOST_UPDATE' -NotePropertyValue $true -Force
-                Save-DiscordSettings $tmp
-                $f = Join-Path $tempDir 'DiscordSetup.exe'
-                P 2 "Downloading"
-                Get-FileAny @('https://discord.com/api/downloads/distributions/app/installers/latest?channel=stable&platform=win&arch=x64') $f 2 35
-                Test-InstallerFile $f
-                # Discord is a per-user app: installed (and first launched) as ADMINISTRATOR it breaks with
-                # "InconsistentInstallerState". So it is installed WITHOUT elevation, as the signed-in user,
-                # through a one-shot scheduled task (RunLevel Limited).
-                $tn = 'CleanWindows-DiscordSetup'
-                $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+            # Runs a program as the signed-in user WITHOUT elevation (one-shot scheduled task, RunLevel Limited).
+            # Discord is a per-user app: started as administrator, its updater gets confused.
+            $tn = 'CleanWindows-DiscordAsUser'
+            $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+            function Start-AsUser([string]$Exe, [string]$Arguments) {
                 Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction SilentlyContinue
-                $act = New-ScheduledTaskAction -Execute $f -Argument '-s'
+                $act = if ($Arguments) { New-ScheduledTaskAction -Execute $Exe -Argument $Arguments } else { New-ScheduledTaskAction -Execute $Exe }
                 $prn = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
                 $set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
                 Register-ScheduledTask -TaskName $tn -Action $act -Principal $prn -Settings $set -Force | Out-Null
                 Start-ScheduledTask -TaskName $tn
-                P 36 "Installing (as the signed-in user, not as admin)"
-                $sw2 = [Diagnostics.Stopwatch]::StartNew()
-                Start-Sleep -Seconds 3
-                while ($sw2.Elapsed.TotalSeconds -lt 300) {
-                    $st = (Get-ScheduledTask -TaskName $tn -ErrorAction SilentlyContinue).State
-                    if ($st -ne 'Running') { break }
-                    P (36 + [int](39 * (1 - [math]::Exp(-$sw2.Elapsed.TotalSeconds / 30)))) ("Silent install... {0}s" -f [int]$sw2.Elapsed.TotalSeconds)
-                    Start-Sleep -Seconds 1
-                }
-                $res = (Get-ScheduledTaskInfo -TaskName $tn -ErrorAction SilentlyContinue).LastTaskResult
-                Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction SilentlyContinue
-                L INFO "Discord installer finished as $user (result: $res)"
-                Add-Changed
-                # Discord starts itself after the install and finishes setting up: let it finish, THEN close it
-                P 76 "Waiting for Discord first launch to finish"
+            }
+            # Waits until Discord is up and its updater has been quiet for 15 s (max ~2.5 min), then closes it
+            function Wait-DiscordSettled([int]$From, [string]$Label) {
                 $seen = $false; $calm = 0
                 for ($k = 0; $k -lt 150; $k++) {
                     $dc = @(Get-Process -Name 'Discord' -ErrorAction SilentlyContinue)
                     $up = @(Get-Process -Name 'Update' -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path -like "$dRoot\*" })
                     if ($dc.Count -gt 0) { $seen = $true }
                     if ($seen -and $up.Count -eq 0) { $calm++ } else { $calm = 0 }
-                    if ($calm -ge 15) { break }                 # 15 s with Discord up and no updater running
-                    if (-not $seen -and $k -ge 30) { break }    # Discord never started: nothing to wait for
-                    P (76 + [int]($k / 10)) ("Waiting for Discord first launch... {0}s" -f $k)
+                    if ($calm -ge 15) { break }
+                    if (-not $seen -and $k -ge 40) { break }
+                    P ($From + [int]($k / 15)) ("{0}... {1}s" -f $Label, $k)
                     Start-Sleep -Seconds 1
                 }
                 Stop-Discord
-                if (Test-Path -LiteralPath $dUpdate) { L SUCCESS "Discord installed" }
-                else { L WARNING "Installer finished but Discord was not found in %LOCALAPPDATA%"; return }
+                Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction SilentlyContinue
             }
+
+            $installedNow = $false
+            if (Test-Path -LiteralPath $dUpdate) {
+                P 10 "Already installed"; Add-Same; L INFO "Discord already installed - install skipped"
+            } else {
+                P 0 "Closing Discord / updater"
+                Stop-Discord
+                $f = Join-Path $tempDir 'DiscordSetup.exe'
+                P 2 "Downloading"
+                Get-FileAny @('https://discord.com/api/downloads/distributions/app/installers/latest?channel=stable&platform=win&arch=x64') $f 2 35
+                Test-InstallerFile $f
+                P 36 "Installing (as the signed-in user, not as admin)"
+                Start-AsUser $f '-s'
+                Wait-DiscordSettled 36 'Silent install'
+                if (-not (Test-Path -LiteralPath $dUpdate)) { L WARNING "Installer finished but Discord was not found in %LOCALAPPDATA%"; return }
+                Add-Changed; $installedNow = $true
+                L SUCCESS "Discord installed (as $user)"
+            }
+
+            # Known bug of Discord's SILENT installer (-s): the first normal launch fails with
+            # "InconsistentInstallerState - Attempt to install host that is currently running".
+            # Official workaround: run the newest app-x.x.x\Discord.exe once with --squirrel-firstrun.
+            $app = Get-ChildItem -LiteralPath $dRoot -Directory -Filter 'app-*' -ErrorAction SilentlyContinue |
+                   Sort-Object { try { [version]($_.Name -replace '^app-', '') } catch { [version]'0.0' } } -Descending | Select-Object -First 1
+            $mk = 'HKCU:\Software\CleanWindows'
+            $done = (Get-ItemProperty -LiteralPath $mk -ErrorAction SilentlyContinue).DiscordFirstRun
+            if ($app -and (Test-Path -LiteralPath (Join-Path $app.FullName 'Discord.exe')) -and ($installedNow -or $done -ne $app.Name)) {
+                P 70 "Finishing Discord setup (first run)"
+                Stop-Discord
+                Start-AsUser (Join-Path $app.FullName 'Discord.exe') '--squirrel-firstrun'
+                Wait-DiscordSettled 70 'Discord first run'
+                if (-not (Test-Path -LiteralPath $mk)) { New-Item -Path $mk -Force | Out-Null }
+                Set-ItemProperty -LiteralPath $mk -Name 'DiscordFirstRun' -Value $app.Name
+                Add-Changed
+                L INFO "Discord first run completed ($($app.Name), --squirrel-firstrun): fixes the 'InconsistentInstallerState' error"
+            } elseif ($app) { Add-Same }
 
             # === Gaming optimization (applied every run, only what differs) ===
             P 92 "Optimizing Discord"
