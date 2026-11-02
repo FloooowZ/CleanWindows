@@ -1,30 +1,30 @@
 ﻿# =============================================================================
 # All-In-One Clean Windows (Self-Contained) - v3
-# - Chaque tache tourne dans un job isole avec un TIMEOUT de 5 minutes
-#   (si elle bloque, elle est tuee et le script passe a la suivante).
-# - Installations 100% silencieuses (aucune fenetre, aucune sortie console).
-# - Barre de progression globale + barre de progression par tache (en %).
-# - Log complet : Documents\CLEANWINDOWSLOG.TXT
-# - Resume (taches, durees, avertissements/erreurs) : Bureau\CLEANWINDOWS-RESUME.TXT
-# - Options : -List (liste les taches) | -Only "NVIDIA,Services" | -Skip "Plex,Final Cleanup"
-# - Apres redemarrage : Bureau\CLEANWINDOWS-APRES-REBOOT.TXT (comparaison avant / apres)
+# - Each task runs in an isolated job with a 5-minute TIMEOUT
+#   (if it hangs, it is killed and the script moves on to the next one).
+# - 100% silent installs (no windows, no console output).
+# - Overall progress bar + per-task progress bar (in %).
+# - Full log: Documents\CLEANWINDOWSLOG.TXT
+# - Summary (tasks, durations, warnings/errors): Desktop\CLEANWINDOWS-SUMMARY.TXT
+# - Options: -List (lists the tasks) | -Only "NVIDIA,Services" | -Skip "Plex,Final Cleanup"
+# - After reboot: Desktop\CLEANWINDOWS-AFTER-REBOOT.TXT (before / after comparison)
 # =============================================================================
 
 #Requires -Version 5.1
 
 param(
-    [string]$Only = '',   # ex. -Only "NVIDIA,Services" : ne lance que les taches dont le nom contient l'un de ces mots
-    [string]$Skip = '',   # ex. -Skip "Plex,Final Cleanup" : ignore ces taches
-    [switch]$List         # affiche la liste des taches (numeros / noms) puis quitte
+    [string]$Only = '',   # e.g. -Only "NVIDIA,Services": only runs tasks whose name contains one of these words
+    [string]$Skip = '',   # e.g. -Skip "Plex,Final Cleanup": skips these tasks
+    [switch]$List         # shows the task list (numbers / names) then exits
 )
 
-# === Admin elevation (relance automatique en Administrateur, avec Bypass) ===
+# === Admin elevation (automatic relaunch as Administrator, with Bypass) ===
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force -ErrorAction SilentlyContinue
-$env:PSExecutionPolicyPreference = 'Bypass'   # herite par les processus enfants (jobs)
+$env:PSExecutionPolicyPreference = 'Bypass'   # inherited by child processes (jobs)
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]"Administrator")
 if (-not $isAdmin) {
     if (-not $PSCommandPath) {
-        # Execute depuis la memoire (irm ... | iex) : le script n'existe pas sur le disque, impossible de le relancer en administrateur
+        # Running from memory (irm ... | iex): the script does not exist on disk, so it cannot be relaunched as administrator
         Write-Host "This script must run from a file. Download it first, then run it:" -ForegroundColor Yellow
         Write-Host '  irm "<URL>" -OutFile "$env:TEMP\AllInOne.ps1"; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\AllInOne.ps1"' -ForegroundColor Gray
         Start-Sleep -Seconds 8
@@ -49,12 +49,12 @@ $Host.UI.RawUI.BackgroundColor = "Black"
 Clear-Host
 
 # === Settings ===
-$TaskTimeoutSeconds = 300          # Timeout applique a CHAQUE tache (5 minutes)
-$CleanUserDownloads = $true        # $true = vide aussi le dossier Telechargements a la fin ($false pour le conserver)
-$RunComponentCleanup = $true       # $true = nettoyage du magasin de composants (DISM) : libere des Go mais peut durer plusieurs minutes
-$ProgressPreference = 'Continue'   # Necessaire pour afficher les barres
+$TaskTimeoutSeconds = 300          # Timeout applied to EACH task (5 minutes)
+$CleanUserDownloads = $true        # $true = also empties the Downloads folder at the end ($false to keep it)
+$RunComponentCleanup = $true       # $true = component store cleanup (DISM): frees GBs but can take several minutes
+$ProgressPreference = 'Continue'   # Required to display the progress bars
 
-# === Logging (fichier uniquement : la console reste propre) ===
+# === Logging (file only: the console stays clean) ===
 $docs = [Environment]::GetFolderPath('MyDocuments')
 if (-not $docs) { $docs = Join-Path $env:USERPROFILE 'Documents' }
 $logPath = Join-Path $docs "CLEANWINDOWSLOG.TXT"
@@ -76,7 +76,7 @@ function Write-Log {
     try {
         [IO.File]::AppendAllText($script:ActiveLog, $line + "`r`n", [Text.Encoding]::UTF8)
     } catch {
-        # Dossier Documents inaccessible (redirection, droits...) : on bascule sur %TEMP% pour ne JAMAIS perdre le log
+        # Documents folder inaccessible (redirection, permissions...): fall back to %TEMP% so the log is NEVER lost
         $script:ActiveLog = Join-Path $env:TEMP 'CLEANWINDOWSLOG.TXT'
         try { [IO.File]::AppendAllText($script:ActiveLog, $line + "`r`n", [Text.Encoding]::UTF8) } catch { }
     }
@@ -92,7 +92,7 @@ try {
 } catch { Write-Log "System information unavailable: $($_.Exception.Message)" "WARNING" }
 try { if ((Get-Item -LiteralPath $script:ActiveLog -ErrorAction Stop).Length -le 0) { Write-Host "WARNING: the log file is empty - check write permissions on $script:ActiveLog" -ForegroundColor Yellow } } catch { }
 
-# === Mesures AVANT (comparees a la fin du script et apres redemarrage) + type de machine ===
+# === BEFORE measurements (compared at the end of the script and after reboot) + machine type ===
 function Get-SystemMetrics {
     $os  = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
     $svc = @(Get-Service -ErrorAction SilentlyContinue)
@@ -112,7 +112,7 @@ try {
     $script:Baseline = Get-SystemMetrics
     Write-Log ("BASELINE (before): " + (($script:Baseline.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ' | '))
     if (Test-Path -LiteralPath $script:BaselineFile) {
-        # Re-execution : on garde la toute premiere mesure comme reference ("avant" reel)
+        # Re-run: keep the very first measurement as the reference (true "before")
         $old = Get-Content -LiteralPath $script:BaselineFile -Raw | ConvertFrom-Json
         $script:BaselineRef = $old.Metrics
         Write-Log "Baseline from the first run kept as reference ($($old.Date))"
@@ -129,11 +129,11 @@ try {
 Write-Log ("Chassis: " + $(if ($script:IsLaptop) { 'portable (laptop) - battery-related settings are left alone' } else { 'desktop / VM' }))
 
 # =============================================================================
-# Fonctions disponibles DANS chaque job (chaque tache)
-# Les jobs communiquent avec le script principal via des lignes de texte :
-#   P|<pourcentage>|<message>   -> progression de la tache
-#   L|<niveau>|<message>        -> ligne de log
-#   PID|<id>                    -> processus enfant (tue en cas de timeout)
+# Functions available INSIDE each job (each task)
+# Jobs communicate with the main script through text lines:
+#   P|<percent>|<message>       -> task progress
+#   L|<level>|<message>         -> log line
+#   PID|<id>                    -> child process (killed on timeout)
 # =============================================================================
 $Init = {
     $ErrorActionPreference = 'Stop'
@@ -155,7 +155,7 @@ $Init = {
         }
     }
 
-    # Telecharge depuis une liste d'URLs (sources de secours) - leve une erreur si toutes echouent
+    # Downloads from a list of URLs (fallback sources) - throws if all of them fail
     function Get-FileAny {
         param([string[]]$Urls, $Out, [int]$From = 0, [int]$To = 45)
         $ok = $false
@@ -166,7 +166,7 @@ $Init = {
         if (-not $ok) { throw "All download sources failed" }
     }
 
-    # API Windows (SystemParametersInfo / broadcast) pour appliquer theme + animations IMMEDIATEMENT
+    # API Windows (SystemParametersInfo / broadcast) to apply theme + animations IMMEDIATELY
     function Initialize-Native {
         if ('CleanWin.Native' -as [type]) { return }
         $sig = @(
@@ -179,7 +179,7 @@ $Init = {
         Add-Type -Namespace CleanWin -Name Native -MemberDefinition $sig
     }
 
-    # Ajoute des exclusions Windows Defender (chemins / processus)
+    # Adds Windows Defender exclusions (paths / processes)
     function Add-DefExclusion {
         param([string[]]$Paths = @(), [string[]]$Processes = @())
         foreach ($x in $Paths) {
@@ -192,7 +192,7 @@ $Init = {
         }
     }
 
-    # Liste les antivirus tiers enregistres dans le Centre de securite (hors Windows Defender)
+    # Lists third-party antivirus products registered in Security Center (excluding Windows Defender)
     function Get-ThirdPartyAV {
         try {
             Get-CimInstance -Namespace 'root/SecurityCenter2' -ClassName AntiVirusProduct -ErrorAction Stop |
@@ -201,7 +201,7 @@ $Init = {
         } catch { }
     }
 
-    # Retrouve winget.exe (alias utilisateur ou dossier WindowsApps)
+    # Locates winget.exe (user alias or WindowsApps folder)
     function Get-WingetPath {
         $c = Get-Command winget.exe -ErrorAction SilentlyContinue
         if ($c) { return $c.Source }
@@ -212,7 +212,7 @@ $Init = {
         return $null
     }
 
-    # Lance un processus cache avec pourcentage estime. Code retour dans $global:LastExitCode2.
+    # Starts a hidden process with an estimated percentage. Exit code in $global:LastExitCode2.
     function Invoke-Proc {
         param([string]$Path, [string]$Arguments, [string]$WorkDir = '', [int]$From = 10, [int]$To = 95, [string]$Label = 'Working', [double]$Tau = 40)
         $sp = @{ FilePath = $Path; ArgumentList = $Arguments; WindowStyle = 'Hidden'; PassThru = $true }
@@ -230,7 +230,7 @@ $Init = {
         $global:LastExitCode2 = $p.ExitCode
     }
 
-    # Installation silencieuse via winget (source officielle de l'editeur)
+    # Silent install via winget (publisher's official source)
     function Install-Winget {
         param([string]$Id, [string]$Source = 'winget', [int]$From = 10, [int]$To = 95)
         $w = Get-WingetPath
@@ -238,17 +238,17 @@ $Init = {
         $a = "install --id $Id --exact --source $Source --silent --accept-package-agreements --accept-source-agreements --disable-interactivity"
         Invoke-Proc $w $a '' $From $To "winget install $Id" 45
         $code = $global:LastExitCode2
-        # 0 = OK ; -1978335135 = deja installe ; -1978335189 = rien a mettre a jour
+        # 0 = OK ; -1978335135 = already installed; -1978335189 = nothing to update
         if ($code -in 0, -1978335135, -1978335189) { L INFO "winget: $Id OK (code $code)" }
         else { throw "winget install $Id failed (exit code $code)" }
     }
 
-    # GPU NVIDIA present ?
+    # NVIDIA GPU present?
     function Get-NvidiaGpu {
         Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object { $_.PNPDeviceID -match 'VEN_10DE' -or $_.Name -match 'NVIDIA' }
     }
 
-    # Verifie un installeur telecharge : vrai executable / MSI (pas une page web) + signature numerique (journalisee ; refus si altere)
+    # Checks a downloaded installer: real executable / MSI (not a web page) + digital signature (logged; rejected if tampered)
     function Test-InstallerFile {
         param([string]$Path)
         if (-not (Test-Path -LiteralPath $Path)) { return }
@@ -269,7 +269,7 @@ $Init = {
         }
     }
 
-    # Portable ? (type de chassis) - les reglages batterie / hibernation sont alors laisses tels quels
+    # Laptop? (chassis type) - battery / hibernation settings are then left as they are
     function Test-Laptop {
         try {
             $ct = @((Get-CimInstance Win32_SystemEnclosure -ErrorAction Stop).ChassisTypes)
@@ -277,7 +277,7 @@ $Init = {
         } catch { return $false }
     }
 
-    # Execute une commande native sans faire planter le job (retourne Code + Out)
+    # Runs a native command without crashing the job (returns Code + Out)
     function Invoke-Native {
         param([string]$Exe, [string[]]$Arguments)
         $old = $ErrorActionPreference
@@ -288,7 +288,7 @@ $Init = {
         [pscustomobject]@{ Code = $code; Out = $out }
     }
 
-    # Desinstalle des packages APPX (tous les utilisateurs + packages provisionnes) avec progression
+    # Uninstalls APPX packages (all users + provisioned packages) with progress
     function Remove-AppxByName {
         param([string[]]$Patterns, [int]$From = 0, [int]$To = 100)
         P $From "Scanning installed apps"
@@ -299,8 +299,8 @@ $Init = {
         $total = $targets.Count + $provTargets.Count
         if ($total -eq 0) { L INFO "No matching app found (already clean)"; P $To "Nothing to remove"; return }
         $i = 0
-        # 1) D'abord retirer le provisionnement : une fois le package installe supprime, Windows ne retrouve plus ses fichiers
-        #    et Remove-AppxProvisionedPackage echoue avec "chemin introuvable".
+        # 1) Remove the provisioning first: once the installed package is removed, Windows can no longer find its files
+        #    and Remove-AppxProvisionedPackage fails with "path not found".
         foreach ($pp in $provTargets) {
             $i++
             P ($From + [int](($To - $From) * $i / $total)) "Deprovisioning $($pp.DisplayName)"
@@ -313,7 +313,7 @@ $Init = {
                 else { L WARNING "Could not deprovision $($pp.DisplayName): $msg" }
             }
         }
-        # 2) Puis supprimer les packages installes (tous les utilisateurs)
+        # 2) Then remove the installed packages (all users)
         foreach ($pkg in $targets) {
             $i++
             P ($From + [int](($To - $From) * $i / $total)) "Removing $($pkg.Name)"
@@ -325,7 +325,7 @@ $Init = {
         }
     }
 
-    # Telechargement avec pourcentage reel
+    # Download with real percentage
     function Get-File {
         param($Url, $Out, [int]$From = 0, [int]$To = 50)
         $req = [Net.HttpWebRequest]::Create($Url)
@@ -355,7 +355,7 @@ $Init = {
         L INFO "Downloaded: $Url"
     }
 
-    # Installation silencieuse (fenetre cachee) - le % est une estimation basee sur le temps
+    # Silent install (hidden window) - the % is a time-based estimate
     function Invoke-Installer {
         param($Path, $Arguments, [int]$From = 50, [int]$To = 98)
         if ($Path -match '\.(exe|msi)$') { Test-InstallerFile $Path }
@@ -370,7 +370,7 @@ $Init = {
         }
         $p.WaitForExit()
         $code = $p.ExitCode
-        # 0 = OK, 3010/1641 = OK (reboot requis), 1638 = deja installe (version plus recente)
+        # 0 = OK, 3010/1641 = OK (reboot required), 1638 = already installed (newer version)
         if ($code -in 0, 1638, 1641, 3010) {
             L INFO "Installer finished: $(Split-Path $Path -Leaf) (ExitCode: $code)"
         } else {
@@ -380,14 +380,14 @@ $Init = {
     }
 }
 
-# --- IMPORTANT : Start-Job envoie -InitializationScript en ligne de commande (base64 UTF-16, limite Windows = 32 767 caracteres).
-# On ecrit donc les fonctions communes dans un fichier et le job ne recoit qu'une ligne qui le charge.
+# --- IMPORTANT: Start-Job passes -InitializationScript on the command line (base64 UTF-16, Windows limit = 32,767 characters).
+# So the shared functions are written to a file and the job only receives one line that loads it.
 $initFile = Join-Path $tempDir 'cleanwindows_init.ps1'
 Set-Content -LiteralPath $initFile -Value $Init.ToString() -Encoding UTF8
 $InitLoader = [scriptblock]::Create("Invoke-Expression ([System.IO.File]::ReadAllText('" + $initFile.Replace("'", "''") + "'))")
 
 # =============================================================================
-# Lance une tache dans un job avec timeout + barres de progression
+# Runs a task in a job with timeout + progress bars
 # =============================================================================
 $script:Summary = @()
 
@@ -416,7 +416,7 @@ function Invoke-Task {
                 'P'   { $pct = [int]$parts[1]; $msg = $parts[2] }
                 'L'   {
                     $lvl = $parts[1]
-                    if ($lvl -eq 'SKIP') { $skipped = $true; $lvl = 'INFO' }      # tache non applicable : pas un avertissement
+                    if ($lvl -eq 'SKIP') { $skipped = $true; $lvl = 'INFO' }      # task not applicable: not a warning
                     Write-Log $parts[2] $lvl
                     if ($lvl -eq 'ERROR')   { $hadError = $true }
                     if ($lvl -eq 'WARNING') { $hadWarn = $true }
@@ -443,12 +443,12 @@ function Invoke-Task {
         $hadError = $true
         Write-Log "Job failed: $($job.ChildJobs[0].JobStateInfo.Reason.Message)" "ERROR"
     }
-    # Erreurs non fatales emises par la tache (conservees pour le diagnostic)
+    # Non-fatal errors emitted by the task (kept for diagnostics)
     foreach ($je in ($jobErrors | Select-Object -First 8)) { Write-Log ("[{0}] {1}" -f $Name, ($je -replace '\s+', ' ')) "JOBERR" }
     Remove-Job $job -Force -ErrorAction SilentlyContinue
     Write-Progress -Id 2 -Activity $Name -Completed
 
-    # Resultat sur une seule ligne, avec barre en texte
+    # Single-line result, with a text bar
     if ($timedOut)      { $status = "TIMEOUT (skipped)"; $color = "Yellow"; $final = $pct }
     elseif ($hadError)  { $status = "ERROR (see log)";    $color = "Red";    $final = $pct }
     elseif ($hadWarn)   { $status = "OK (warnings)";      $color = "Yellow"; $final = 100 }
@@ -464,12 +464,12 @@ function Invoke-Task {
 }
 
 # =============================================================================
-# DEFINITION DES TACHES
-# Chaque tache est executee dans son propre job (donc soumise au timeout).
+# TASK DEFINITIONS
+# Each task runs in its own job (so it is subject to the timeout).
 # =============================================================================
 $Tasks = @(
 
-    # Point de restauration : filet de securite AVANT toute modification
+    # Restore point: safety net BEFORE any change
     @{ Name = "System Restore Point (safety)"; Script = {
         param($tempDir)
         $key = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore'
@@ -478,7 +478,7 @@ $Tasks = @(
             P 0 "Enabling System Protection"
             try { Enable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction Stop; L INFO "System Protection enabled on $env:SystemDrive" }
             catch { L INFO "System Protection: $($_.Exception.Message.Split("`n")[0])" }
-            # Windows limite a 1 point de restauration par 24 h : on leve cette limite le temps de la creation
+            # Windows allows only 1 restore point per 24 h: lift that limit while creating it
             try { $old = (Get-ItemProperty -LiteralPath $key -Name 'SystemRestorePointCreationFrequency' -ErrorAction Stop).SystemRestorePointCreationFrequency } catch { }
             Set-Reg $key 'SystemRestorePointCreationFrequency' 0
             P 15 "Creating restore point (can take up to a minute)"
@@ -561,14 +561,14 @@ $Tasks = @(
         } catch { L ERROR "Context Menu failed: $($_.Exception.Message)" }
     } },
 
-    # IA : Copilot / Recall / Click to Do
+    # AI: Copilot / Recall / Click to Do
     @{ Name = "AI Bloatware Removal (Copilot / Recall)"; Script = {
         param($tempDir)
         try {
             P 0 "Stopping Copilot processes"
             foreach ($pn in 'Copilot', 'CopilotRuntime') { Stop-Process -Name $pn -Force -ErrorAction SilentlyContinue }
 
-            # Politiques + masquage du bouton Copilot
+            # Policies + hide the Copilot button
             $steps = @(
                 { Set-Reg 'HKCU:\Software\Policies\Microsoft\Windows\WindowsCopilot' 'TurnOffWindowsCopilot' 1 },
                 { Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot' 'TurnOffWindowsCopilot' 1 },
@@ -582,7 +582,7 @@ $Tasks = @(
             foreach ($s in $steps) { & $s; $i++; P (5 + [int](25 * $i / $steps.Count)) "Policy $i/$($steps.Count)" }
             L INFO "Copilot / Recall / Click to Do policies applied"
 
-            # Applications IA
+            # AI apps
             Remove-AppxByName @(
                 'Microsoft.Copilot',
                 'Microsoft.Windows.Copilot',
@@ -591,7 +591,7 @@ $Tasks = @(
                 'MicrosoftWindows.Client.CoreAI'
             ) 30 70
 
-            # Fonctionnalite Windows Recall
+            # Windows Recall feature
             P 70 "Checking Windows Recall feature"
             try {
                 $f = Get-WindowsOptionalFeature -Online -FeatureName Recall -ErrorAction Stop
@@ -606,12 +606,12 @@ $Tasks = @(
         } catch { L ERROR "AI removal failed: $($_.Exception.Message)" }
     } },
 
-    # APPX inutiles pour le gaming
+    # APPX packages useless for gaming
     @{ Name = "Useless Apps Removal (APPX)"; Script = {
         param($tempDir)
         try {
-            # Conserves volontairement : Microsoft Store, winget (App Installer), Calculatrice, Terminal, Outil Capture, Bloc-notes,
-            # codecs (HEVC/AV1/WebP...), runtimes (VCLibs, .NET Native, UI.Xaml), panneaux NVIDIA/AMD/Realtek.
+            # Intentionally kept: Microsoft Store, winget (App Installer), Calculator, Terminal, Snipping Tool, Notepad,
+            # codecs (HEVC/AV1/WebP...), runtimes (VCLibs, .NET Native, UI.Xaml), NVIDIA/AMD/Realtek control panels.
             Remove-AppxByName @(
                 'Clipchamp.Clipchamp',
                 'Microsoft.549981C3F5F10',
@@ -664,7 +664,7 @@ $Tasks = @(
                 '*CandyCrush*', 'king.com.*', '*TikTok*', '*Facebook*', '*Instagram*', '*Twitter*'
             ) 0 90
 
-            # Empeche Windows de reinstaller WhatsApp, LinkedIn, etc. (apps "suggerees" du Store)
+            # Prevents Windows from reinstalling WhatsApp, LinkedIn, etc. ("suggested" Store apps)
             P 90 "Disabling consumer features"
             $cc = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent'
             Set-Reg $cc 'DisableWindowsConsumerFeatures' 1
@@ -684,10 +684,10 @@ $Tasks = @(
                 Stop-Process -Name $pn -Force -ErrorAction SilentlyContinue
             }
 
-            # Applications : Xbox, Game Bar, Gaming Services, Xbox Identity Provider, TCUI, overlays...
+            # Apps: Xbox, Game Bar, Gaming Services, Xbox Identity Provider, TCUI, overlays...
             Remove-AppxByName @('Microsoft.Xbox*', 'Microsoft.Gaming*') 5 60
 
-            # Services Xbox : arretes et desactives (Start=4)
+            # Xbox services: stopped and disabled (Start=4)
             P 60 "Disabling Xbox services"
             foreach ($svc in 'XblAuthManager', 'XblGameSave', 'XboxGipSvc', 'XboxNetApiSvc', 'GamingServices', 'GamingServicesNet') {
                 $k = "HKLM:\SYSTEM\CurrentControlSet\Services\$svc"
@@ -698,7 +698,7 @@ $Tasks = @(
                 }
             }
 
-            # Registre : capture / Game DVR / bouton manette
+            # Registry: capture / Game DVR / controller button
             P 75 "Registry"
             $steps = @(
                 { Set-Reg 'HKCU:\System\GameConfigStore' 'GameDVR_Enabled' 0 },
@@ -710,7 +710,7 @@ $Tasks = @(
             $j = 0
             foreach ($s in $steps) { & $s; $j++; P (75 + [int](15 * $j / $steps.Count)) "Registry $j/$($steps.Count)" }
 
-            # Evite la popup "Obtenir une application pour ms-gamingoverlay" (Win+G / bouton Xbox de la manette)
+            # Avoids the "Get an app to open ms-gamingoverlay" popup (Win+G / controller Xbox button)
             P 92 "Blocking ms-gamebar popup"
             foreach ($proto in 'ms-gamebar', 'ms-gamingoverlay') {
                 $b = "Registry::HKEY_CLASSES_ROOT\$proto"
@@ -742,7 +742,7 @@ $Tasks = @(
             Get-ScheduledTask -TaskName 'OneDrive*' -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
 
             P 20 "Uninstalling OneDrive"
-            # Commandes de desinstallation : registre (installation par utilisateur / machine) puis emplacements connus
+            # Uninstall commands: registry (per-user / per-machine install) then known locations
             $cmds = New-Object 'System.Collections.Generic.List[object]'
             foreach ($rk in 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\OneDriveSetup.exe',
                             'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\OneDriveSetup.exe',
@@ -773,7 +773,7 @@ $Tasks = @(
             }
             if ($ran -eq 0) { L INFO "No OneDrive uninstaller found (OneDrive absent or already removed)" }
 
-            # Si OneDrive est toujours present : desinstallation via winget
+            # If OneDrive is still present: uninstall via winget
             $present = { @(@("$env:LOCALAPPDATA\Microsoft\OneDrive\OneDrive.exe", "$env:ProgramFiles\Microsoft OneDrive\OneDrive.exe", "${env:ProgramFiles(x86)}\Microsoft OneDrive\OneDrive.exe") | Where-Object { Test-Path -LiteralPath $_ }) }
             if ((& $present).Count -gt 0) {
                 $w = Get-WingetPath
@@ -820,14 +820,14 @@ $Tasks = @(
         } catch { L ERROR "MSI Mode failed: $($_.Exception.Message)" }
     } },
 
-    # Plan d'alimentation Gaming
+    # Gaming power plan
     @{ Name = "Power Plan - Gaming (Ultimate Performance)"; Script = {
         param($tempDir)
         try {
             $name = "Gaming - Ultimate Performance"
             $guidRx = '([0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})'
 
-            # Plan deja cree par une execution precedente ? On le reutilise.
+            # Plan already created by a previous run? Reuse it.
             P 0 "Looking for existing plan"
             $guid = $null
             $list = (Invoke-Native powercfg.exe @('/list')).Out
@@ -835,7 +835,7 @@ $Tasks = @(
                 if ($l -match [regex]::Escape($name) -and $l -match $guidRx) { $guid = $Matches[1]; break }
             }
 
-            # Sinon : duplique Ultimate Performance (ou High Performance si indisponible)
+            # Otherwise: duplicate Ultimate Performance (or High Performance if unavailable)
             if (-not $guid) {
                 P 10 "Creating power plan"
                 foreach ($base in @('e9a42b02-d5df-448d-aa00-03f14749eb61', '8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c')) {
@@ -850,7 +850,7 @@ $Tasks = @(
                 Invoke-Native powercfg.exe @('-changename', $guid, $name, 'Maximum performance plan for gaming') | Out-Null
             }
 
-            # Reglages : sous-groupe, reglage, valeur, libelle
+            # Settings: subgroup, setting, value, label
             $PROC = '54533251-82be-4824-96c1-47b60b740d00'
             $settings = @(
                 @($PROC, '893dee8e-2bef-41e0-89c6-b55d0929964c', 100, 'CPU minimum state 100%'),
@@ -884,7 +884,7 @@ $Tasks = @(
             $act = Invoke-Native powercfg.exe @('-setactive', $guid)
             if ($act.Code -ne 0) { throw "powercfg -setactive failed: $($act.Out.Trim())" }
 
-            # Supprime tous les autres plans (le plan actif ne peut pas etre supprime : on a active le notre avant)
+            # Delete all other plans (the active plan cannot be deleted: ours was activated first)
             P 94 "Removing other power plans"
             $list = (Invoke-Native powercfg.exe @('/list')).Out
             $others = @()
@@ -904,18 +904,18 @@ $Tasks = @(
         } catch { L ERROR "Power plan failed: $($_.Exception.Message)" }
     } },
 
-    # THEME NOIR COMPLET : vrai noir partout (apps, systeme, barre des taches, demarrer, ouverture de session)
+    # FULL BLACK THEME: true black everywhere (apps, system, taskbar, Start, sign-in)
     @{ Name = "Theme Black (Full Dark Everywhere)"; Script = {
         param($tempDir)
         try {
-            # CAUSE de la barre bleue : Windows utilise AccentPalette, qui ecrase AccentColorMenu / StartColorMenu.
-            # On ecrit donc la palette complete (gris clair pour les liens/survols, noir pour les fonds) + les couleurs DWM.
+            # CAUSE of the blue taskbar: Windows uses AccentPalette, which overrides AccentColorMenu / StartColorMenu.
+            # So write the full palette (light grey for links/hover, black for backgrounds) + the DWM colors.
             $accent   = 0x1F000000
             $accentIn = 0x1F202020
             $palette  = [byte[]](0xC8,0xC8,0xC8,0x1F, 0xC8,0xC8,0xC8,0x1F, 0xC8,0xC8,0xC8,0x1F, 0xC8,0xC8,0xC8,0x1F,
                                  0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0x00)
             $items = @()
-            # Utilisateur courant + profil .DEFAULT (ecran de connexion)
+            # Current user + .DEFAULT profile (sign-in screen)
             foreach ($root in 'HKCU:\SOFTWARE\Microsoft\Windows', 'Registry::HKEY_USERS\.DEFAULT\SOFTWARE\Microsoft\Windows') {
                 $pers = "$root\CurrentVersion\Themes\Personalize"
                 $acc  = "$root\CurrentVersion\Explorer\Accent"
@@ -924,21 +924,21 @@ $Tasks = @(
                 $items += ,@($pers, 'SystemUsesLightTheme', 0)
                 $items += ,@($pers, 'EnableTransparency', 0)
                 $items += ,@($pers, 'EnabledBlurBehind', 0)
-                $items += ,@($pers, 'ColorPrevalence', 1)              # couleur d'accent sur Demarrer + barre des taches (= noir)
+                $items += ,@($pers, 'ColorPrevalence', 1)              # accent color on Start + taskbar (= black)
                 $items += ,@($acc, 'AccentColorMenu', $accent)
                 $items += ,@($acc, 'StartColorMenu', $accentIn)
                 $items += ,@($acc, 'AccentPalette', $palette, 'Binary')
-                $items += ,@($dwm, 'ColorPrevalence', 0)               # pas de couleur sur les barres de titre
+                $items += ,@($dwm, 'ColorPrevalence', 0)               # no color on title bars
                 $items += ,@($dwm, 'AccentColor', $accent)
                 $items += ,@($dwm, 'AccentColorInactive', $accentIn)
             }
-            # Ouverture de session / ecran de verrouillage / Ctrl+Alt+Suppr en noir
+            # Sign-in / lock screen / Ctrl+Alt+Del in black
             $items += ,@('HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon', 'Background', '0 0 0', 'String')
             $items += ,@('HKLM:\SOFTWARE\Policies\Microsoft\Windows\System', 'DisableAcrylicBackgroundOnLogon', 1)
             $items += ,@('HKLM:\SOFTWARE\Policies\Microsoft\Windows\System', 'DisableLogonBackgroundImage', 1)
             $items += ,@('HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization', 'PersonalColors_Background', '#000000', 'String')
             $items += ,@('HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization', 'NoLockScreen', 1)
-            # Fond d'ecran noir uni
+            # Solid black wallpaper
             $items += ,@('HKCU:\Control Panel\Colors', 'Background', '0 0 0', 'String')
             $items += ,@('HKCU:\Control Panel\Desktop', 'Wallpaper', '', 'String')
             $items += ,@('HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Wallpapers', 'BackgroundType', 1)
@@ -952,11 +952,11 @@ $Tasks = @(
                 P ([int](80 * $i / $items.Count)) "Setting $i/$($items.Count)"
             }
 
-            # Application immediate : fond noir + notification "theme change" a toutes les fenetres
+            # Apply immediately: black background + "theme changed" notification to all windows
             P 85 "Applying black wallpaper"
             try {
                 Initialize-Native
-                [CleanWin.Native]::SystemParametersInfo(20, 0, [string]'', 3) | Out-Null     # SPI_SETDESKWALLPAPER (vide = couleur unie)
+                [CleanWin.Native]::SystemParametersInfo(20, 0, [string]'', 3) | Out-Null     # SPI_SETDESKWALLPAPER (empty = solid color)
                 P 92 "Broadcasting theme change"
                 $r = [UIntPtr]::Zero
                 [CleanWin.Native]::SendMessageTimeout([IntPtr]0xFFFF, 0x1A, [UIntPtr]::Zero, 'ImmersiveColorSet', 2, 5000, [ref]$r) | Out-Null
@@ -968,25 +968,25 @@ $Tasks = @(
         } catch { L ERROR "Theme failed: $($_.Exception.Message)" }
     } },
 
-    # PERFORMANCE WINDOWS GAMING : animations coupees (appliquees en direct) + reglages jeu
+    # WINDOWS GAMING PERFORMANCE: animations off (applied live) + game settings
     @{ Name = "Windows Performance (Gaming + No Animations)"; Script = {
         param($tempDir)
         try {
-            # ---- 1) ANIMATIONS : appliquees directement par l'API Windows (effet immediat, sans reconnexion) ----
+            # ---- 1) ANIMATIONS: applied directly through the Windows API (immediate effect, no sign-out) ----
             P 0 "Disabling all animations"
             Initialize-Native
             $off = @(
-                0x103F,   # SPI_SETUIEFFECTS (interrupteur general des effets)
-                0x1043,   # SPI_SETCLIENTAREAANIMATION  ("Effets d'animation" de Windows 11)
-                0x1003,   # menus animes
-                0x1005,   # listes deroulantes animees
-                0x1007,   # defilement fluide des listes
-                0x1013,   # fondu des menus
-                0x1015,   # fondu de selection
-                0x1017,   # info-bulles animees
-                0x1019,   # fondu des info-bulles
-                0x101B,   # ombre du curseur
-                0x1009    # barres de titre en degrade
+                0x103F,   # SPI_SETUIEFFECTS (master switch for effects)
+                0x1043,   # SPI_SETCLIENTAREAANIMATION  (Windows 11 "Animation effects")
+                0x1003,   # animated menus
+                0x1005,   # animated combo boxes
+                0x1007,   # smooth list scrolling
+                0x1013,   # menu fade
+                0x1015,   # selection fade
+                0x1017,   # animated tooltips
+                0x1019,   # tooltip fade
+                0x101B,   # cursor shadow
+                0x1009    # gradient title bars
             )
             $n = 0
             foreach ($a in $off) {
@@ -994,21 +994,21 @@ $Tasks = @(
                 try { [CleanWin.Native]::SystemParametersInfo([uint32]$a, 0, [IntPtr]::Zero, 3) | Out-Null } catch { }
                 P ([int](20 * $n / $off.Count)) "Animation setting $n/$($off.Count)"
             }
-            # Reduction / agrandissement des fenetres sans animation
+            # Minimize / maximize windows without animation
             $ai = New-Object CleanWin.Native+ANIMATIONINFO
             $ai.cbSize = 8; $ai.iMinAnimate = 0
             [CleanWin.Native]::SystemParametersInfo(0x49, 8, [ref]$ai, 3) | Out-Null
-            # Texte lisse (ClearType) conserve pour la lisibilite
+            # Smoothed text (ClearType) kept for readability
             [CleanWin.Native]::SystemParametersInfo(0x4B, 1, [IntPtr]::Zero, 3) | Out-Null
             [CleanWin.Native]::SystemParametersInfo(0x200B, 0, [IntPtr]2, 3) | Out-Null
             L INFO "Animations disabled via SystemParametersInfo (immediate)"
 
-            # ---- 2) REGISTRE : effets visuels, explorateur, jeu ----
+            # ---- 2) REGISTRY: visual effects, Explorer, gaming ----
             $adv = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
             $cdm = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
             $mm  = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile'
             $items = @(
-                # Effets visuels : personnalise = tout coupe sauf polices lissees, miniatures et ombres (lisibilite sur fond noir)
+                # Visual effects: custom = everything off except smoothed fonts, thumbnails and shadows (readability on black)
                 @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects', 'VisualFXSetting', 3),
                 @('HKCU:\Control Panel\Desktop', 'MenuShowDelay', '0', 'String'),
                 @('HKCU:\Control Panel\Desktop', 'FontSmoothing', '2', 'String'),
@@ -1019,7 +1019,7 @@ $Tasks = @(
                 @('HKCU:\Software\Microsoft\Windows\DWM', 'EnableAeroPeek', 0),
                 @('HKCU:\Software\Microsoft\Windows\DWM', 'AlwaysHibernateThumbnails', 0),
                 @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Serialize', 'StartupDelayInMSec', 0),
-                # Pubs / suggestions / reinstallation automatique d'apps
+                # Ads / suggestions / automatic app reinstall
                 @($cdm, 'ContentDeliveryAllowed', 0),
                 @($cdm, 'OemPreInstalledAppsEnabled', 0),
                 @($cdm, 'PreInstalledAppsEnabled', 0),
@@ -1036,7 +1036,7 @@ $Tasks = @(
                 @($cdm, 'SubscribedContent-353694Enabled', 0),
                 @($cdm, 'SubscribedContent-353696Enabled', 0),
                 @($cdm, 'SubscribedContent-338393Enabled', 0),
-                # Gaming : Game Mode, pas d'apps en arriere-plan, priorite multimedia/jeux, planification GPU
+                # Gaming: Game Mode, no background apps, multimedia/game priority, GPU scheduling
                 @('HKCU:\Software\Microsoft\GameBar', 'AutoGameModeEnabled', 1),
                 @('HKCU:\Software\Microsoft\GameBar', 'AllowAutoGameMode', 1),
                 @('HKCU:\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications', 'GlobalUserDisabled', 1),
@@ -1050,11 +1050,11 @@ $Tasks = @(
                 @('HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers', 'HwSchMode', 2),
                 @('HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling', 'PowerThrottlingOff', 1),
                 @('HKCU:\Software\Microsoft\DirectX\UserGpuPreferences', 'DirectXUserGlobalSettings', 'SwapEffectUpgradeEnable=1;VRROptimizeEnable=0;', 'String'),
-                # Pas de popups Sticky Keys en jeu (reglages souris : tache "Mouse Optimization")
+                # No Sticky Keys popups in game (mouse settings: "Mouse Optimization" task)
                 @('HKCU:\Control Panel\Accessibility\StickyKeys', 'Flags', '506', 'String'),
                 @('HKCU:\Control Panel\Accessibility\Keyboard Response', 'Flags', '122', 'String'),
                 @('HKCU:\Control Panel\Accessibility\ToggleKeys', 'Flags', '58', 'String'),
-                # Moins de processus en arriere-plan : telemetrie minimale + rapports d'erreurs coupes
+                # Fewer background processes: minimal telemetry + error reporting off
                 @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection', 'AllowTelemetry', 0),
                 @('HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting', 'Disabled', 1)
             )
@@ -1067,7 +1067,7 @@ $Tasks = @(
                 P (20 + [int](55 * $i / $items.Count)) "Setting $i/$($items.Count)"
             }
 
-            # ---- 3) SERVICES + SYSTEME DE FICHIERS ----
+            # ---- 3) SERVICES + FILE SYSTEM ----
             P 78 "Disabling telemetry services"
             foreach ($svc in 'DiagTrack', 'dmwappushservice') {
                 $k = "HKLM:\SYSTEM\CurrentControlSet\Services\$svc"
@@ -1090,7 +1090,7 @@ $Tasks = @(
         } catch { L ERROR "Performance failed: $($_.Exception.Message)" }
     } },
 
-    # Souris : acceleration (Ameliorer la precision du pointeur) OFF, vitesse 1:1, appliquee en direct
+    # Mouse: acceleration (Enhance pointer precision) OFF, 1:1 speed, applied live
     @{ Name = "Mouse Optimization (no acceleration, 1:1)"; Script = {
         param($tempDir)
         try {
@@ -1103,15 +1103,15 @@ $Tasks = @(
                 Add-Type -Namespace CleanWin -Name Mouse -MemberDefinition $msig
             }
 
-            # ---- 1) REGISTRE (utilisateur + ecran de connexion) ----
+            # ---- 1) REGISTRY (user + sign-in screen) ----
             P 15 "Writing mouse settings"
             $vals = @(
-                @('MouseSpeed', '0'),            # Ameliorer la precision du pointeur : desactive
+                @('MouseSpeed', '0'),            # Enhance pointer precision: off
                 @('MouseThreshold1', '0'),
                 @('MouseThreshold2', '0'),
-                @('MouseSensitivity', '10'),     # vitesse du pointeur 6/11 = 1:1 (aucun facteur d'echelle)
-                @('MouseTrails', '0'),           # pas de traces du pointeur
-                @('SnapToDefaultButton', '0'),   # pas de saut automatique vers le bouton par defaut
+                @('MouseSensitivity', '10'),     # pointer speed 6/11 = 1:1 (no scaling factor)
+                @('MouseTrails', '0'),           # no pointer trails
+                @('SnapToDefaultButton', '0'),   # no automatic snap to the default button
                 @('MouseHoverTime', '400')
             )
             foreach ($root in 'HKCU:\Control Panel\Mouse', 'Registry::HKEY_USERS\.DEFAULT\Control Panel\Mouse') {
@@ -1121,16 +1121,16 @@ $Tasks = @(
             }
             L INFO "Mouse registry: MouseSpeed=0, Threshold1/2=0, MouseSensitivity=10 (1:1), trails off, snap-to-button off"
 
-            # ---- 2) APPLICATION IMMEDIATE (sans redemarrage) ----
+            # ---- 2) APPLY IMMEDIATELY (no reboot) ----
             P 50 "Applying live (SystemParametersInfo)"
             $ok = $true
-            if (-not [CleanWin.Mouse]::SystemParametersInfo(0x0004, 0, [int[]]@(0, 0, 0), 3)) { $ok = $false }   # SPI_SETMOUSE : seuils 0/0, acceleration 0
+            if (-not [CleanWin.Mouse]::SystemParametersInfo(0x0004, 0, [int[]]@(0, 0, 0), 3)) { $ok = $false }   # SPI_SETMOUSE : thresholds 0/0, acceleration 0
             if (-not [CleanWin.Mouse]::SystemParametersInfo(0x0071, 0, [IntPtr]10, 3)) { $ok = $false }           # SPI_SETMOUSESPEED : 10
             [void][CleanWin.Mouse]::SystemParametersInfo(0x005D, 0, [IntPtr]::Zero, 3)                             # SPI_SETMOUSETRAILS : off
             [void][CleanWin.Mouse]::SystemParametersInfo(0x0060, 0, [IntPtr]::Zero, 3)                             # SPI_SETSNAPTODEFBUTTON : off
             if ($ok) { L INFO "Mouse acceleration disabled live" } else { L WARNING "Live apply failed - settings take effect after sign out / reboot" }
 
-            # ---- 3) Courbe de souris : lineaire (neutralise les anciennes courbes personnalisees) ----
+            # ---- 3) Mouse curve: linear (neutralizes old custom curves) ----
             P 75 "Resetting mouse curves"
             foreach ($root in 'HKCU:\Control Panel\Mouse', 'Registry::HKEY_USERS\.DEFAULT\Control Panel\Mouse') {
                 foreach ($c in 'SmoothMouseXCurve', 'SmoothMouseYCurve') {
@@ -1143,19 +1143,19 @@ $Tasks = @(
         } catch { L ERROR "Mouse optimization failed: $($_.Exception.Message)" }
     } },
 
-    # Explorateur Windows : "Ce PC" + aucun historique
+    # Windows Explorer: "This PC" + no history
     @{ Name = "Explorer Optimization (This PC + no history)"; Script = {
         param($tempDir)
         try {
             $adv = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
             $exp = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer'
             $items = @(
-                @($adv, 'LaunchTo', 1),                       # ouvre l'Explorateur sur "Ce PC"
-                @($adv, 'HideFileExt', 0),                    # affiche les extensions de fichiers
-                @($adv, 'ShowSyncProviderNotifications', 0),  # pas de pubs OneDrive/Office
+                @($adv, 'LaunchTo', 1),                       # opens Explorer on "This PC"
+                @($adv, 'HideFileExt', 0),                    # shows file extensions
+                @($adv, 'ShowSyncProviderNotifications', 0),  # no OneDrive/Office ads
                 @($adv, 'Start_TrackDocs', 0),
-                @($exp, 'ShowRecent', 0),                     # pas de fichiers recents dans l'acces rapide
-                @($exp, 'ShowFrequent', 0),                   # pas de dossiers frequents
+                @($exp, 'ShowRecent', 0),                     # no recent files in Quick Access
+                @($exp, 'ShowFrequent', 0),                   # no frequent folders
                 @($exp, 'ShowCloudFilesInQuickAccess', 0),
                 @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer', 'NoRecentDocsHistory', 1),
                 @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer', 'ClearRecentDocsOnExit', 1),
@@ -1170,7 +1170,7 @@ $Tasks = @(
                 P ([int](50 * $i / $items.Count)) "Setting $i/$($items.Count)"
             }
 
-            # Efface l'historique deja existant
+            # Clear existing history
             P 55 "Clearing recent files"
             foreach ($d in "$env:APPDATA\Microsoft\Windows\Recent") {
                 if (Test-Path -LiteralPath $d) {
@@ -1189,13 +1189,13 @@ $Tasks = @(
         } catch { L ERROR "Explorer optimization failed: $($_.Exception.Message)" }
     } },
 
-    # Edge + WebView2 : optimisation gaming
+    # Edge + WebView2 : gaming optimization
     @{ Name = "Edge / WebView2 - Gaming Optimization"; Script = {
         param($tempDir)
         try {
             $edge = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
             $items = @(
-                # Edge : aucun process en arriere-plan, mode efficacite, pas de bloat
+                # Edge: no background processes, efficiency mode, no bloat
                 @($edge, 'StartupBoostEnabled', 0),
                 @($edge, 'BackgroundModeEnabled', 0),
                 @($edge, 'EfficiencyModeEnabled', 1),
@@ -1218,7 +1218,7 @@ $Tasks = @(
                 P ([int](70 * $i / $items.Count)) "Policy $i/$($items.Count)"
             }
 
-            # Supprime le lancement automatique d'Edge au demarrage de Windows
+            # Remove Edge auto-launch at Windows startup
             P 75 "Removing Edge autostart entries"
             foreach ($run in 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run') {
                 try {
@@ -1226,10 +1226,10 @@ $Tasks = @(
                     foreach ($pr in $props) { Remove-ItemProperty -LiteralPath $run -Name $pr.Name -ErrorAction SilentlyContinue; L INFO "Removed autostart: $($pr.Name)" }
                 } catch { }
             }
-            # Empeche Edge de recreer son raccourci sur le bureau (mises a jour)
+            # Prevent Edge from recreating its desktop shortcut (updates)
             try { Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\EdgeUpdate' 'CreateDesktopShortcutDefault' 0 } catch { }
 
-            # Unpin Edge du bureau
+            # Remove Edge from the desktop
             P 80 "Unpinning Edge from desktop"
             $deskDirs = @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('CommonDesktopDirectory'))
             if ($env:OneDrive) { $deskDirs += (Join-Path $env:OneDrive 'Desktop') }
@@ -1240,7 +1240,7 @@ $Tasks = @(
                 }
             }
 
-            # Unpin Edge de la barre des taches
+            # Unpin Edge from the taskbar
             P 83 "Unpinning Edge from taskbar"
             $tbRemoved = $false
             try {
@@ -1252,7 +1252,7 @@ $Tasks = @(
                         L INFO "Removed taskbar pin: $($lnk.Name)"
                     }
                 }
-                # Methode shell (verbe "Desepingler de la barre des taches") quand elle est disponible
+                # Shell method ("Unpin from taskbar" verb, English or French Windows) when available
                 try {
                     $app = (New-Object -ComObject Shell.Application).NameSpace('shell:AppsFolder').Items() | Where-Object { $_.Name -eq 'Microsoft Edge' } | Select-Object -First 1
                     if ($app) {
@@ -1261,7 +1261,7 @@ $Tasks = @(
                     }
                 } catch { }
                 if ($tbRemoved) {
-                    # Redemarre l'explorateur pour appliquer le retrait de l'epingle
+                    # Restart Explorer to apply the unpin
                     Stop-Process -Name 'explorer' -Force -ErrorAction SilentlyContinue
                     Start-Sleep -Seconds 2
                     if (-not (Get-Process -Name 'explorer' -ErrorAction SilentlyContinue)) { Start-Process 'explorer.exe' }
@@ -1277,7 +1277,7 @@ $Tasks = @(
         } catch { L ERROR "Edge optimization failed: $($_.Exception.Message)" }
     } },
 
-    # Microsoft Store : optimisation gaming
+    # Microsoft Store : gaming optimization
     @{ Name = "Microsoft Store Optimization"; Script = {
         param($tempDir)
         try {
@@ -1287,12 +1287,12 @@ $Tasks = @(
             $store = 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsStore'
             $bg    = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications'
             $items = @(
-                @($store, 'AutoDownload', 2),                  # pas de mises a jour auto des apps Store (pas de telechargement pendant un jeu)
-                @($store, 'DisableOSUpgrade', 1),              # pas d'offres de mise a niveau Windows
-                @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization', 'DODownloadMode', 0),   # telechargements directs, pas de partage P2P
+                @($store, 'AutoDownload', 2),                  # no automatic Store app updates (no downloads while gaming)
+                @($store, 'DisableOSUpgrade', 1),              # no Windows upgrade offers
+                @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization', 'DODownloadMode', 0),   # direct downloads, no P2P sharing
                 @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\AdvertisingInfo', 'DisabledByGroupPolicy', 1),
                 @('HKCU:\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo', 'Enabled', 0),
-                @("$bg\Microsoft.WindowsStore_8wekyb3d8bbwe", 'Disabled', 1),          # le Store ne tourne plus en arriere-plan
+                @("$bg\Microsoft.WindowsStore_8wekyb3d8bbwe", 'Disabled', 1),          # the Store no longer runs in the background
                 @("$bg\Microsoft.WindowsStore_8wekyb3d8bbwe", 'DisabledByUser', 1),
                 @("$bg\Microsoft.StorePurchaseApp_8wekyb3d8bbwe", 'Disabled', 1),
                 @("$bg\Microsoft.StorePurchaseApp_8wekyb3d8bbwe", 'DisabledByUser', 1)
@@ -1305,7 +1305,7 @@ $Tasks = @(
                 P (5 + [int](55 * $i / $items.Count)) "Setting $i/$($items.Count)"
             }
 
-            # Vide le cache du Store (regenere automatiquement, evite lenteurs / echecs de telechargement)
+            # Clear the Store cache (regenerated automatically, avoids slowness / failed downloads)
             P 65 "Clearing Store cache"
             foreach ($d in "$env:LOCALAPPDATA\Packages\Microsoft.WindowsStore_8wekyb3d8bbwe\LocalCache", "$env:LOCALAPPDATA\Packages\Microsoft.WindowsStore_8wekyb3d8bbwe\TempState") {
                 if (Test-Path -LiteralPath $d) {
@@ -1321,7 +1321,7 @@ $Tasks = @(
         } catch { L ERROR "Store optimization failed: $($_.Exception.Message)" }
     } },
 
-    # Windows Defender : performance gaming, protection antivirus uniquement
+    # Windows Defender : gaming performance, antivirus protection only
     @{ Name = "Windows Defender - Gaming Performance (antivirus only)"; Script = {
         param($tempDir)
         try {
@@ -1329,19 +1329,19 @@ $Tasks = @(
             $others = @(Get-ThirdPartyAV)
             if ($others.Count -gt 0) { L WARNING "Other antivirus registered: $($others -join ', ') (Defender settings below still apply)" }
 
-            # ---- 1) Moteur : analyses legeres, jamais en jeu ; protection en temps reel CONSERVEE ----
+            # ---- 1) Engine: light scans, never while gaming; real-time protection KEPT ----
             $settings = @(
-                @('ScanAvgCPULoadFactor', 10),            # analyses limitees a 10 % du CPU (defaut 50)
+                @('ScanAvgCPULoadFactor', 10),            # scans limited to 10% CPU (default 50)
                 @('EnableLowCpuPriority', $true),
                 @('ScanOnlyIfIdleEnabled', $true),
                 @('DisableCatchupFullScan', $true),
                 @('DisableCatchupQuickScan', $true),
-                @('ScanScheduleDay', 8),                  # 8 = jamais d'analyse planifiee (analyse manuelle possible)
+                @('ScanScheduleDay', 8),                  # 8 = never run a scheduled scan (manual scan still possible)
                 @('DisableRemovableDriveScanning', $true),
                 @('DisableEmailScanning', $true),
                 @('DisableScanningNetworkFiles', $true),
-                @('SubmitSamplesConsent', 2),             # pas d'envoi automatique d'echantillons
-                @('EnableControlledFolderAccess', 0),     # n'empeche pas les jeux d'ecrire dans Documents
+                @('SubmitSamplesConsent', 2),             # no automatic sample submission
+                @('EnableControlledFolderAccess', 0),     # does not block games from writing to Documents
                 @('EnableNetworkProtection', 0)
             )
             $i = 0
@@ -1352,23 +1352,23 @@ $Tasks = @(
                 P (5 + [int](40 * $i / $settings.Count)) "Defender setting $i/$($settings.Count)"
             }
 
-            # ---- 2) Exclusions : bibliotheques de jeux (moins de micro-saccades a l'ecriture / au chargement) ----
+            # ---- 2) Exclusions: game libraries (less stutter when writing / loading) ----
             P 48 "Game folder exclusions"
             $gamePaths = @("${env:ProgramFiles(x86)}\Steam\steamapps", 'C:\Battlestate Games')
             Add-DefExclusion -Paths $gamePaths
-            # SpotX n'est plus installe : on retire les anciennes exclusions Spotify si elles existent
+            # SpotX is no longer installed: remove old Spotify exclusions if they exist
             foreach ($old in "$env:APPDATA\Spotify", "$env:LOCALAPPDATA\Spotify", "$env:TEMP\SpotX_Temp") {
                 try { Remove-MpPreference -ExclusionPath $old -ErrorAction Stop } catch { }
             }
             try { Remove-MpPreference -ExclusionProcess 'Spotify.exe' -ErrorAction Stop } catch { }
 
-            # ---- 3) Fonctions de securite hors antivirus : coupees pour le gaming ----
+            # ---- 3) Non-antivirus security features: turned off for gaming ----
             P 55 "Disabling non-antivirus protections"
             $items = @(
-                @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\System', 'EnableSmartScreen', 0),                                  # SmartScreen applications / fichiers
+                @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\System', 'EnableSmartScreen', 0),                                  # SmartScreen for apps / files
                 @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer', 'SmartScreenEnabled', 'Off', 'String'),
                 @('HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy', 'VerifiedAndReputablePolicyState', 0),                     # Smart App Control OFF
-                @('HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity', 'Enabled', 0), # Integrite de la memoire (HVCI) OFF = + de FPS
+                @('HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity', 'Enabled', 0), # Memory integrity (HVCI) OFF = more FPS
                 @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceGuard', 'EnableVirtualizationBasedSecurity', 0),             # VBS OFF
                 @('HKLM:\SOFTWARE\Microsoft\Windows Defender Security Center\Notifications', 'DisableNotifications', 1),
                 @('HKLM:\SOFTWARE\Microsoft\Windows Defender Security Center\Notifications', 'DisableEnhancedNotifications', 1),
@@ -1383,7 +1383,7 @@ $Tasks = @(
                 P (55 + [int](35 * $j / $items.Count)) "Setting $j/$($items.Count)"
             }
 
-            # ---- 4) Verification : le temps reel doit rester actif ----
+            # ---- 4) Check: real-time protection must stay on ----
             P 92 "Verifying real-time protection"
             try {
                 $st = Get-MpComputerStatus -ErrorAction Stop
@@ -1394,7 +1394,7 @@ $Tasks = @(
         } catch { L ERROR "Defender config failed: $($_.Exception.Message)" }
     } },
 
-    # Menu demarrer simple et propre
+    # Simple, clean Start menu
     @{ Name = "Start Menu - Simple & Clean"; Script = {
         param($tempDir)
         try {
@@ -1404,13 +1404,13 @@ $Tasks = @(
             $pm  = 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Start'
             $emptyPins = '{"pinnedList":[]}'
             $items = @(
-                # Liste des epingles vide (stocke par strategie : necessite Windows 11 Pro/Enterprise recent)
+                # Empty pinned list (stored by policy: requires a recent Windows 11 Pro/Enterprise)
                 @($pol, 'ConfigureStartPins', $emptyPins, 'String'),
                 @($pol, 'ConfigureStartPins_ProviderSet', 1),
                 @($pol, 'ConfigureStartPinsJSON', $emptyPins, 'String'),
                 @($pm,  'ConfigureStartPins', $emptyPins, 'String'),
                 @($pm,  'ConfigureStartPins_ProviderSet', 1),
-                # Pas de "recemment ajoute", "plus utilises", ni de section Recommande
+                # No "recently added", "most used" or Recommended section
                 @($pol, 'HideRecentlyAddedApps', 1),
                 @($pol, 'ShowOrHideMostUsedApps', 2),
                 @($pol, 'HideRecommendedSection', 1),
@@ -1419,17 +1419,17 @@ $Tasks = @(
                 @($adv, 'Start_TrackDocs', 0),
                 @($adv, 'Start_IrisRecommendations', 0),
                 @($adv, 'Start_AccountNotifications', 0),
-                # Pas de recherche web Bing dans le menu demarrer
+                # No Bing web search in the Start menu
                 @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Search', 'BingSearchEnabled', 0),
                 @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Search', 'SearchboxTaskbarMode', 0),
                 @('HKCU:\Software\Policies\Microsoft\Windows\Explorer', 'DisableSearchBoxSuggestions', 1),
-                # Barre des taches epuree : Vue des taches, Widgets, Chat
+                # Cleaner taskbar: Task View, Widgets, Chat
                 @($adv, 'ShowTaskViewButton', 0),
                 @($adv, 'TaskbarDa', 0),
                 @($adv, 'TaskbarMn', 0),
-                # Liste de toutes les applications : vue "Liste" (0 = Categorie, 1 = Grille, 2 = Liste)
+                # All apps list: "List" view (0 = Category, 1 = Grid, 2 = List)
                 @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Start', 'AllAppsViewMode', 2),
-                # Widgets + Meteo desactives (strategie + barre des taches)
+                # Widgets + Weather disabled (policy + taskbar)
                 @('HKLM:\SOFTWARE\Policies\Microsoft\Dsh', 'AllowNewsAndInterests', 0),
                 @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Feeds', 'EnableFeeds', 0),
                 @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Feeds', 'ShellFeedsTaskbarViewMode', 2)
@@ -1443,8 +1443,8 @@ $Tasks = @(
                 P ([int](30 * $i / $items.Count)) "Start menu setting $i/$($items.Count)"
             }
 
-            # Desepingle TOUT : on supprime les fichiers d'epingles de l'utilisateur ; avec la strategie "liste vide"
-            # ci-dessus, Windows les regenere VIDES (nouveaux utilisateurs inclus).
+            # Unpin EVERYTHING: delete the user's pin files; with the "empty list" policy
+            # above, Windows regenerates them EMPTY (new users included).
             P 35 "Closing Start menu process"
             Stop-Process -Name 'StartMenuExperienceHost' -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 2
@@ -1467,7 +1467,7 @@ $Tasks = @(
         } catch { L ERROR "Start menu failed: $($_.Exception.Message)" }
     } },
 
-    # Clic droit sur une appli de la barre des taches : option "Terminer la tache" (Windows 11 23H2+)
+    # Right-click on a taskbar app: "End task" option (Windows 11 23H2+)
     @{ Name = "Taskbar - End Task in right-click menu"; Script = {
         param($tempDir)
         try {
@@ -1478,8 +1478,8 @@ $Tasks = @(
         } catch { L ERROR "End Task failed: $($_.Exception.Message)" }
     } },
 
-    # ================= INSTALLATION DES LOGICIELS (les unes apres les autres) =================
-    # winget : les anciennes versions du script le supprimaient, on s'assure qu'il est present
+    # ================= SOFTWARE INSTALLATION (one after another) =================
+    # winget: older versions of the script removed it, make sure it is present
     @{ Name = "Ensure winget (App Installer)"; Script = {
         param($tempDir)
         try {
@@ -1491,7 +1491,7 @@ $Tasks = @(
             $w = Get-WingetPath
             if ($w) { P 100 "Restored"; L SUCCESS "winget restored: $w"; return }
 
-            # Telechargement depuis Microsoft (aka.ms/getwinget) + dependances officielles
+            # Download from Microsoft (aka.ms/getwinget) + official dependencies
             $vc    = Join-Path $tempDir 'VCLibs.x64.appx'
             $xaml  = Join-Path $tempDir 'UIXaml.x64.appx'
             $bundle = Join-Path $tempDir 'winget.msixbundle'
@@ -1508,7 +1508,7 @@ $Tasks = @(
         } catch { L ERROR "winget setup failed: $($_.Exception.Message)" }
     } },
 
-    # Launcher Escape From Tarkov (BSG Launcher - source officielle)
+    # Launcher Escape From Tarkov (BSG Launcher - official source)
     @{ Name = "Install Escape From Tarkov Launcher"; Script = {
         param($tempDir)
         try {
@@ -1525,7 +1525,7 @@ $Tasks = @(
         } catch { L ERROR "BSG Launcher failed: $($_.Exception.Message)" }
     } },
 
-    # Steam (source officielle Valve)
+    # Steam (official Valve source)
     @{ Name = "Install Steam"; Script = {
         param($tempDir)
         try {
@@ -1540,7 +1540,7 @@ $Tasks = @(
         } catch { L ERROR "Steam failed: $($_.Exception.Message)" }
     } },
 
-    # VLC : winget (source VideoLAN) en premier, installeur officiel VideoLAN (/S) en secours
+    # VLC: winget (VideoLAN source) first, official VideoLAN installer (/S) as fallback
     @{ Name = "Install VLC"; Script = {
         param($tempDir)
         try {
@@ -1563,7 +1563,7 @@ $Tasks = @(
         } catch { L ERROR "VLC failed: $($_.Exception.Message)" }
     } },
 
-    # Plex (application de bureau Plex, via winget). Pour Plex Media Server : remplacer l'id par Plex.PlexMediaServer
+    # Plex (Plex desktop app, via winget). For Plex Media Server: replace the id with Plex.PlexMediaServer
     @{ Name = "Install Plex"; Script = {
         param($tempDir)
         try {
@@ -1575,7 +1575,7 @@ $Tasks = @(
         } catch { L ERROR "Plex failed: $($_.Exception.Message)" }
     } },
 
-    # Google Chrome (MSI entreprise officiel Google)
+    # Google Chrome (official Google enterprise MSI)
     @{ Name = "Install Google Chrome"; Script = {
         param($tempDir)
         try {
@@ -1590,7 +1590,7 @@ $Tasks = @(
         } catch { L ERROR "Chrome failed: $($_.Exception.Message)" }
     } },
 
-    # Discord (installeur officiel, mode silencieux -s)
+    # Discord (official installer, silent mode -s)
     @{ Name = "Install Discord"; Script = {
         param($tempDir)
         try {
@@ -1599,7 +1599,7 @@ $Tasks = @(
             P 0 "Downloading"
             Get-FileAny @('https://discord.com/api/downloads/distributions/app/installers/latest?channel=stable&platform=win&arch=x64') $f 0 40
             Invoke-Installer $f '-s' 40 90
-            # Discord se lance tout seul apres l'installation : on le ferme
+            # Discord launches itself after install: close it
             P 92 "Closing first launch"
             for ($k = 0; $k -lt 20; $k++) {
                 if (Get-Process -Name 'Discord' -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 3; break }
@@ -1611,7 +1611,7 @@ $Tasks = @(
         } catch { L ERROR "Discord failed: $($_.Exception.Message)" }
     } },
 
-    # NanaZip (archiveur moderne, fork de 7-Zip) : winget (Microsoft Store / MSIX)
+    # NanaZip (modern archiver, 7-Zip fork): winget (Microsoft Store / MSIX)
     @{ Name = "Install NanaZip"; Script = {
         param($tempDir)
         try {
@@ -1624,7 +1624,7 @@ $Tasks = @(
         } catch { L ERROR "NanaZip failed: $($_.Exception.Message)" }
     } },
 
-    # Notepad++ (installeur officiel via winget, mode silencieux)
+    # Notepad++ (official installer via winget, silent mode)
     @{ Name = "Install Notepad++"; Script = {
         param($tempDir)
         try {
@@ -1638,7 +1638,7 @@ $Tasks = @(
         } catch { L ERROR "Notepad++ failed: $($_.Exception.Message)" }
     } },
 
-    # MSI Afterburner + RivaTuner (RTSS) : installation silencieuse (winget, /S) + affichage du nombre de FPS uniquement
+    # MSI Afterburner + RivaTuner (RTSS) : silent install (winget, /S) + FPS counter only
     @{ Name = "Install MSI Afterburner + RTSS (FPS only)"; Script = {
         param($tempDir)
         try {
@@ -1652,12 +1652,12 @@ $Tasks = @(
             else { L INFO "RTSS already installed" }
             if (-not (Test-Path -LiteralPath $rtExe)) { throw "RTSS.exe not found after installation" }
 
-            # Les installeurs peuvent lancer les programmes : on les ferme avant de modifier la configuration
+            # The installers may launch the programs: close them before changing the configuration
             P 82 "Closing Afterburner / RTSS"
             foreach ($pn in 'MSIAfterburner', 'RTSS', 'RTSSHooksLoader64', 'RTSSHooksLoader') { Stop-Process -Name $pn -Force -ErrorAction SilentlyContinue }
             Start-Sleep -Seconds 2
 
-            # Profils RTSS : Global = rien ; EscapeFromTarkov.exe = OSD + "Show own statistics" (compteur de FPS RTSS) ; rien d'autre
+            # RTSS profiles: Global = nothing; EscapeFromTarkov.exe = OSD + "Show own statistics" (RTSS FPS counter); nothing else
             P 85 "Configuring RTSS (FPS counter for Tarkov only)"
             $global = Join-Path $rtDir 'Profiles\Global'
             if (-not (Test-Path -LiteralPath $global)) {
@@ -1668,7 +1668,7 @@ $Tasks = @(
                 Start-Sleep -Seconds 1
             }
             $enc = [Text.Encoding]::Default
-            # Ecrit/MAJ des cles [Settings] dans un profil RTSS (cree le fichier si besoin)
+            # Writes/updates [Settings] keys in an RTSS profile (creates the file if needed)
             $setProfile = {
                 param($path, $pairs)
                 $lines = New-Object 'System.Collections.Generic.List[string]'
@@ -1690,17 +1690,17 @@ $Tasks = @(
                 [IO.File]::WriteAllLines($path, $lines, $enc)
             }
 
-            # Profil Global : OSD et statistiques desactives (aucun affichage FPS dans les autres jeux)
+            # Global profile: OSD and statistics off (no FPS display in other games)
             & $setProfile $global @(@('EnableOSD', '0'), @('EnableStat', '0'))
             L INFO "RTSS global profile: EnableOSD=0, EnableStat=0 (no overlay by default)"
 
-            # Profil EscapeFromTarkov.exe : OSD actif + "Show own statistics" (compteur de FPS) uniquement ici
+            # EscapeFromTarkov.exe profile: OSD on + "Show own statistics" (FPS counter) only here
             $tarkov = Join-Path $rtDir 'Profiles\EscapeFromTarkov.exe'
             & $setProfile $tarkov @(@('EnableOSD', '1'), @('EnableStat', '1'))
             L INFO "RTSS profile EscapeFromTarkov.exe: EnableOSD=1, EnableStat=1 (FPS counter)"
-            # MSI Afterburner : aucune sonde matérielle n'est cochee "Show in On-Screen Display" par defaut -> seul le FPS de RTSS s'affiche
+            # MSI Afterburner: no hardware sensor has "Show in On-Screen Display" checked by default -> only the RTSS FPS is shown
 
-            # RTSS doit tourner pour afficher le compteur : on le lance (il se relancera avec Windows)
+            # RTSS must be running to show the counter: start it (it will restart with Windows)
             P 95 "Starting RTSS"
             Start-Process -FilePath $rtExe -WindowStyle Hidden -ErrorAction SilentlyContinue
             P 100 "Done"
@@ -1708,7 +1708,7 @@ $Tasks = @(
         } catch { L ERROR "Afterburner / RTSS failed: $($_.Exception.Message)" }
     } },
 
-    # Runtimes utiles aux jeux (anciens VC++ + .NET) : evite les erreurs "DLL manquante" au lancement de vieux jeux
+    # Runtimes useful for games (legacy VC++ + .NET): avoids "missing DLL" errors when launching old games
     @{ Name = "Gaming Runtimes (legacy VC++ + .NET)"; Timeout = 600; Script = {
         param($tempDir)
         try {
@@ -1735,8 +1735,8 @@ $Tasks = @(
     } },
 
     # ================= NVIDIA =================
-    # NVCleanstall (TechPowerUp) : installe, mais il n'a AUCUNE ligne de commande pour installer un driver sans interface.
-    # Le script reproduit donc son resultat (driver "debloat") avec l'installeur NVIDIA et la selection de composants.
+    # NVCleanstall (TechPowerUp): installed, but it has NO command line to install a driver without its UI.
+    # So the script reproduces its result ("debloated" driver) with the NVIDIA installer and component selection.
     @{ Name = "NVIDIA - Install NVCleanstall (TechPowerUp)"; Script = {
         param($tempDir)
         try {
@@ -1764,7 +1764,7 @@ $Tasks = @(
             $ver = [string]$info.Version
             L INFO "Latest Game Ready driver: $ver"
 
-            # Version deja installee ? ("32.0.15.7680" -> "576.80")
+            # Version already installed? ("32.0.15.7680" -> "576.80")
             $digits = ($gpu[0].DriverVersion -replace '\.', '')
             $cur = if ($digits.Length -ge 5) { $digits.Substring($digits.Length - 5).Insert(3, '.') } else { '' }
             $out = Join-Path $tempDir "nvidia_driver_$ver.exe"
@@ -1790,7 +1790,7 @@ $Tasks = @(
             if (-not (Test-Path -LiteralPath $state.File)) { throw "Driver package not found: $($state.File)" }
             Test-InstallerFile $state.File
 
-            # --- Extraction (7-Zip : l'installeur NVIDIA est une archive 7z auto-extractible) ---
+            # --- Extraction (7-Zip: the NVIDIA installer is a self-extracting 7z archive) ---
             $seven = Join-Path $tempDir '7zr.exe'
             if (-not (Test-Path -LiteralPath $seven)) { P 1 "Downloading 7-Zip (7zr)"; Get-FileAny @('https://www.7-zip.org/a/7zr.exe') $seven 1 5 }
             $dir = Join-Path $tempDir 'nvidia_extracted'
@@ -1807,7 +1807,7 @@ $Tasks = @(
             if (-not $setup) { throw "setup.exe not found in the extracted NVIDIA package" }
             $root = Split-Path $setup
 
-            # --- Composants : pilote d'affichage (+ audio HDMI/DP + PhysX si presents). Pas de GeForce Experience / NVIDIA App / telemetrie ---
+            # --- Components: display driver (+ HDMI/DP audio + PhysX if present). No GeForce Experience / NVIDIA App / telemetry ---
             P 31 "Selecting components"
             $names = @()
             foreach ($f in (Get-ChildItem -LiteralPath $root -Recurse -Filter '*.nvi' -ErrorAction SilentlyContinue)) {
@@ -1819,7 +1819,7 @@ $Tasks = @(
             foreach ($n in $names) { if ($n -match '^(HDAudio|Display\.PhysX|PhysX)' -and $comps -notcontains $n) { $comps += $n } }
             L INFO ("Installing components: " + ($comps -join ', '))
 
-            # --- Installation silencieuse (installation propre) ---
+            # --- Silent install (clean install) ---
             $flags = '-s -noreboot -noeula -nofinish -clean'
             Invoke-Proc $setup ($flags + ' ' + ($comps -join ' ')) $root 32 95 'Installing NVIDIA driver (screen may flicker)' 90
             $code = $global:LastExitCode2
@@ -1831,7 +1831,7 @@ $Tasks = @(
             if ($code -notin 0, 1) { throw "NVIDIA setup failed (exit code $code)" }
             if ($code -eq 1) { L INFO "NVIDIA driver installed - reboot required" }
 
-            # --- Debloat post-installation : telemetrie NVIDIA ---
+            # --- Post-install debloat: NVIDIA telemetry ---
             P 96 "Removing NVIDIA telemetry"
             foreach ($svc in 'NvTelemetryContainer') {
                 $k = "HKLM:\SYSTEM\CurrentControlSet\Services\$svc"
@@ -1864,7 +1864,7 @@ $Tasks = @(
         } catch { L ERROR "NVIDIA Control Panel failed: $($_.Exception.Message)" }
     } },
 
-    # Ecran : 2560x1440 a la frequence maximale proposee (jusqu'a 180 Hz) ; sans effet si l'ecran n'a pas ce mode
+    # Display: 2560x1440 at the highest offered refresh rate (up to 180 Hz); no effect if the monitor lacks this mode
     @{ Name = "Display Mode (2560x1440 @ up to 180 Hz)"; Script = {
         param($tempDir)
         try {
@@ -1912,12 +1912,12 @@ $Tasks = @(
         } catch { L ERROR "Display mode failed: $($_.Exception.Message.Split("`n")[0])" }
     } },
 
-    # Son : format audio spatial de Windows OFF + pas d'attenuation automatique pendant les appels
+    # Sound: Windows spatial audio format OFF + no automatic volume ducking during calls
     @{ Name = "Sound - Disable Windows Spatial Audio"; Script = {
         param($tempDir)
         try {
             $base = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render'
-            $name = '{1da5d803-d492-4edd-8c23-e0c0ffee7f0e},5'      # format spatial de l'appareil (vide = Desactive)
+            $name = '{1da5d803-d492-4edd-8c23-e0c0ffee7f0e},5'      # device spatial format (empty = Off)
             P 0 "Listing playback devices"
             $eps = @(Get-ChildItem -LiteralPath $base -ErrorAction SilentlyContinue)
             $changed = 0; $denied = 0; $already = 0
@@ -1936,7 +1936,7 @@ $Tasks = @(
             L INFO "Spatial audio: $changed device(s) switched OFF, $already already OFF, $denied protected"
             if ($denied -gt 0) { L WARNING "Windows protects $denied audio device key(s): set Settings > System > Sound > (device) > Spatial audio = Off manually for those" }
 
-            # Comportement des communications : "Ne rien faire" (Discord ne baisse plus le volume du jeu)
+            # Communications behavior: "Do nothing" (Discord no longer lowers the game volume)
             P 85 "Communications ducking off"
             Set-Reg 'HKCU:\Software\Microsoft\Multimedia\Audio' 'UserDuckingPreference' 3
             P 100 "Done"
@@ -1944,7 +1944,7 @@ $Tasks = @(
         } catch { L ERROR "Spatial audio step failed: $($_.Exception.Message)" }
     } },
 
-    # Carte reseau : optimisation gaming (IPv4)
+    # Network adapter: gaming optimization (IPv4)
     @{ Name = "Network Optimization (Gaming IPv4)"; Script = {
         param($tempDir)
         try {
@@ -1953,7 +1953,7 @@ $Tasks = @(
             if ($adapters.Count -eq 0) { L WARNING "No active physical network adapter found - per-adapter tweaks skipped" }
             foreach ($a in $adapters) { L INFO "Adapter: $($a.Name) | $($a.InterfaceDescription) | $($a.LinkSpeed)" }
 
-            # ---- 1) Pile TCP/IP globale ----
+            # ---- 1) Global TCP/IP stack ----
             $netsh = @(
                 'int tcp set global autotuninglevel=normal',
                 'int tcp set global rss=enabled',
@@ -1974,10 +1974,10 @@ $Tasks = @(
                 P (2 + [int](23 * $i / $netsh.Count)) "TCP setting $i/$($netsh.Count)"
             }
 
-            # ---- 2) Registre : connexions, priorite IPv4, QoS ----
+            # ---- 2) Registry: connections, IPv4 priority, QoS ----
             $items = @(
                 @('HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters', 'TcpTimedWaitDelay', 30),
-                @('HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters', 'DisabledComponents', 32),   # IPv4 prefere a IPv6 (IPv6 reste actif)
+                @('HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters', 'DisabledComponents', 32),   # IPv4 preferred over IPv6 (IPv6 stays enabled)
                 @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\Psched', 'NonBestEffortLimit', 0),
                 @('HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient', 'EnableMulticast', 0),                 # LLMNR OFF
                 @('HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters', 'EnableMDNS', 0)                    # mDNS OFF
@@ -1985,7 +1985,7 @@ $Tasks = @(
             foreach ($it in $items) { try { Set-Reg $it[0] $it[1] $it[2] } catch { L INFO "Skipped: $($it[1])" } }
             P 30 "Registry tweaks done"
 
-            # ---- 3) Par carte : algorithme de Nagle OFF, offloads / economies d'energie OFF ----
+            # ---- 3) Per adapter: Nagle's algorithm OFF, offloads / power saving OFF ----
             $props = @(
                 @('*FlowControl', 0), @('*InterruptModeration', 0), @('*EEE', 0), @('EEE', 0), @('EnableGreenEthernet', 0),
                 @('GreenEthernet', 0), @('PowerSavingMode', 0), @('AutoPowerSaveModeEnabled', 0), @('ULPMode', 0),
@@ -2012,12 +2012,12 @@ $Tasks = @(
                 P (30 + [int](45 * $n / [Math]::Max(1, $adapters.Count))) "Adapter $n/$($adapters.Count)"
             }
 
-            # ---- 3b) Liaisons / protocoles inutiles (la liste "Cette connexion utilise les elements suivants") ----
+            # ---- 3b) Useless bindings / protocols (the "This connection uses the following items" list) ----
             P 75 "Unbinding unused protocols"
-            $disableIPv6 = $true     # $false pour conserver IPv6 sur la carte
+            $disableIPv6 = $true     # $false to keep IPv6 on the adapter
             $bindings = @('ms_msclient', 'ms_server', 'ms_pacer', 'ms_lldp', 'ms_lltdio', 'ms_rspndr')
-            #   ms_msclient = Client pour les reseaux Microsoft | ms_server = Partage de fichiers et imprimantes
-            #   ms_pacer = Planificateur de paquets QoS | ms_lldp / ms_lltdio / ms_rspndr = LLDP, detection de topologie reseau
+            #   ms_msclient = Client for Microsoft Networks | ms_server = File and Printer Sharing
+            #   ms_pacer = QoS Packet Scheduler | ms_lldp / ms_lltdio / ms_rspndr = LLDP, network topology discovery
             if ($disableIPv6) { $bindings += 'ms_tcpip6' }
             foreach ($a in $adapters) {
                 foreach ($comp in $bindings) {
@@ -2027,13 +2027,13 @@ $Tasks = @(
                 try { Set-DnsClient -InterfaceIndex $a.ifIndex -RegisterThisConnectionsAddress $false -ErrorAction Stop; L INFO "$($a.Name): DNS self-registration off" } catch { }
                 try { Set-NetAdapterPowerManagement -Name $a.Name -WakeOnMagicPacket Disabled -WakeOnPattern Disabled -ErrorAction Stop; L INFO "$($a.Name): Wake-on-LAN off" } catch { }
             }
-            # NetBIOS sur TCP/IP desactive
+            # NetBIOS over TCP/IP disabled
             foreach ($c in @(Get-CimInstance Win32_NetworkAdapterConfiguration -ErrorAction SilentlyContinue | Where-Object { $_.IPEnabled -and ($adapters.ifIndex -contains $_.InterfaceIndex) })) {
                 try { Invoke-CimMethod -InputObject $c -MethodName SetTcpipNetbios -Arguments @{ TcpipNetbiosOptions = [uint32]2 } -ErrorAction Stop | Out-Null; L INFO "NetBIOS over TCP/IP disabled on $($c.Description)" } catch { }
             }
             P 77 "Protocols unbound"
 
-            # ---- 4) Redemarrage des cartes pour appliquer (coupure de quelques secondes) ----
+            # ---- 4) Restart the adapters to apply (a few seconds of disconnection) ----
             P 78 "Restarting adapters"
             foreach ($a in $adapters) {
                 try {
@@ -2046,36 +2046,36 @@ $Tasks = @(
         } catch { L ERROR "Network optimization failed: $($_.Exception.Message)" }
     } },
 
-    # Services Windows inutiles pour le gaming : arretes + desactives (REVERSIBLE : un script de restauration est genere)
+    # Windows services useless for gaming: stopped + disabled (REVERSIBLE: a restore script is generated)
     @{ Name = "Services Optimization (Gaming)"; Script = {
         param($tempDir)
         try {
             P 0 "Preparing service list"
-            # Services desactives (Start = 4). Rien n'est supprime : tout se restaure avec le script genere dans Documents.
+            # Disabled services (Start = 4). Nothing is deleted: everything can be restored with the script generated in Documents.
             $services = @(
-                # Telemetrie / diagnostics / rapports
+                # Telemetry / diagnostics / reporting
                 'DiagTrack', 'dmwappushservice', 'WerSvc', 'wercplsupport', 'PcaSvc', 'DPS', 'WdiServiceHost', 'WdiSystemHost',
                 'diagnosticshub.standardcollector.service', 'GraphicsPerfSvc', 'webthreatdefsvc',
-                # Impression / fax / scanner
+                # Printing / fax / scanner
                 'Spooler', 'PrintNotify', 'Fax', 'stisvc',
-                # Cartes, localisation, capteurs, telephone, realite mixte
+                # Maps, location, sensors, phone, mixed reality
                 'MapsBroker', 'lfsvc', 'PhoneSvc', 'SensorDataService', 'SensrSvc', 'SensorService', 'tzautoupdate', 'SmsRouter',
                 'MixedRealityOpenXRSvc', 'perceptionsimulation', 'spectrum', 'SharedRealitySvc', 'WalletService', 'SEMgrSvc',
-                # Reseau / partage / acces distant
+                # Network / sharing / remote access
                 'LanmanServer', 'lmhosts', 'lltdsvc', 'upnphost', 'SharedAccess', 'icssvc', 'WinRM', 'WebClient', 'RpcLocator',
                 'SessionEnv', 'TermService', 'UmRdpService', 'RemoteRegistry', 'WMPNetworkSvc', 'WFDSConMgrSvc', 'TapiSrv',
                 'PNRPsvc', 'p2psvc', 'p2pimsvc', 'PNRPAutoReg', 'CscService', 'workfolderssvc',
-                # Cartes a puce / entreprise / divers
+                # Smart cards / enterprise / misc
                 'SCardSvr', 'ScDeviceEnum', 'SCPolicySvc', 'CertPropSvc', 'EntAppSvc', 'AppVClient', 'UevAgentService', 'embeddedmode',
                 'WpcMonSvc', 'Wecsvc', 'wisvc', 'RetailDemo', 'TrkWks', 'CDPSvc', 'AJRouter', 'ALG', 'SDRSVC',
-                # Xbox (deja desinstalles par la tache Xbox, on s'assure qu'ils restent coupes)
+                # Xbox (already uninstalled by the Xbox task, make sure they stay off)
                 'XblAuthManager', 'XblGameSave', 'XboxGipSvc', 'XboxNetApiSvc'
             )
-            # Services "par utilisateur" : on desactive le modele (effectif a la prochaine ouverture de session)
+            # "Per-user" services: disable the template (takes effect at next sign-in)
             $perUser = @('OneSyncSvc', 'UserDataSvc', 'UnistoreSvc', 'PimIndexMaintenanceSvc', 'MessagingService', 'CDPUserSvc',
                          'DevicesFlowUserSvc', 'PrintWorkflowUserSvc', 'BcastDVRUserService', 'AarSvc', 'webthreatdefusersvc')
 
-            # SysMain (Superfetch) : inutile sur SSD, conserve sur disque dur
+            # SysMain (Superfetch): useless on SSD, kept on HDD
             $ssd = $false
             try {
                 $disk = Get-Partition -DriveLetter C -ErrorAction Stop | Get-Disk -ErrorAction Stop
@@ -2085,7 +2085,7 @@ $Tasks = @(
             if ($ssd) { $services += 'SysMain'; L INFO "System drive is an SSD: SysMain (Superfetch) disabled" } else { L INFO "System drive type not SSD/unknown: SysMain left as is" }
 
             $backup = New-Object 'System.Collections.Generic.List[string]'
-            $backup.Add('# Restaure les services modifies par All-In-One Clean Windows (lancer en administrateur, puis redemarrer)')
+            $backup.Add('# Restores the services changed by All-In-One Clean Windows (run as administrator, then reboot)')
             $changed = 0; $absent = 0; $already = 0; $failed = 0
             $all = @($services) + @($perUser)
             $i = 0
@@ -2109,7 +2109,7 @@ $Tasks = @(
                 P (3 + [int](85 * $i / $all.Count)) "Service $i/$($all.Count)"
             }
 
-            # Windows Search : en demarrage manuel (le menu Demarrer garde sa recherche, mais l'indexeur ne tourne plus en permanence)
+            # Windows Search: set to manual start (Start menu search still works, but the indexer no longer runs all the time)
             P 90 "Windows Search -> manual"
             $ws = 'HKLM:\SYSTEM\CurrentControlSet\Services\WSearch'
             if (Test-Path -LiteralPath $ws) {
@@ -2119,7 +2119,7 @@ $Tasks = @(
                 } catch { }
             }
 
-            # Script de restauration
+            # Restore script
             $restore = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'CleanWindows-RestoreServices.ps1'
             try { Set-Content -LiteralPath $restore -Value $backup -Encoding UTF8; L INFO "Restore script written: $restore" } catch { L WARNING "Could not write the restore script" }
 
@@ -2128,13 +2128,13 @@ $Tasks = @(
         } catch { L ERROR "Services optimization failed: $($_.Exception.Message)" }
     } },
 
-    # Programmes au demarrage : tout est desactive sauf peripheriques / audio / RTSS (reversible via Gestionnaire des taches > Demarrage)
+    # Startup programs: everything disabled except peripherals / audio / RTSS (reversible via Task Manager > Startup)
     @{ Name = "Startup Programs + Scheduled Tasks (Minimal)"; Script = {
         param($tempDir)
         try {
-            # A garder : logiciels de peripheriques (souris/clavier/casque), audio Realtek, RTSS (compteur de FPS)
+            # Keep: peripheral software (mouse/keyboard/headset), Realtek audio, RTSS (FPS counter)
             $keep = 'Logitech|LGHUB|Razer|Synapse|Corsair|iCUE|SteelSeries|Wooting|Realtek|RtkAud|RTHDVCPL|RTSS'
-            $disabledBytes = [byte[]](3,0,0,0,0,0,0,0,0,0,0,0)    # meme valeur que le Gestionnaire des taches ("Desactive")
+            $disabledBytes = [byte[]](3,0,0,0,0,0,0,0,0,0,0,0)    # same value Task Manager uses ("Disabled")
             $approved = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved'
             $targets = @(
                 @{ Run = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run';                      Ap = "HKCU:\$approved\Run" },
@@ -2164,7 +2164,7 @@ $Tasks = @(
             }
             L INFO "Startup entries disabled: $count (kept: $kept)"
 
-            # Taches planifiees de telemetrie / diagnostic / sync inutiles (certaines sont protegees par Windows : ignorees)
+            # Useless telemetry / diagnostic / sync scheduled tasks (some are protected by Windows: skipped)
             P 45 "Scheduled tasks"
             $tasks = @(
                 @('\Microsoft\Windows\Application Experience\', '*'),
@@ -2201,7 +2201,7 @@ $Tasks = @(
         } catch { L ERROR "Startup cleanup failed: $($_.Exception.Message)" }
     } },
 
-    # Moins de processus : svchost regroupe + etat avant/apres
+    # Fewer processes: svchost grouping + before/after state
     @{ Name = "Process Reduction (svchost grouping)"; Script = {
         param($tempDir)
         try {
@@ -2210,8 +2210,8 @@ $Tasks = @(
             $svch   = @(Get-Process -Name svchost -ErrorAction SilentlyContinue).Count
             L INFO "Processes now: $before (svchost: $svch)"
 
-            # Windows eclate les services en un svchost par service quand la RAM est > 3,5 Go.
-            # Un seuil superieur a la RAM installee les regroupe : beaucoup moins de processus svchost.
+            # Windows splits services into one svchost per service when RAM is > 3.5 GB.
+            # A threshold above the installed RAM groups them: far fewer svchost processes.
             P 40 "Grouping services into fewer svchost processes"
             $ramKB = [uint64]((Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory / 1KB)
             $thr = [int][Math]::Min($ramKB + 1048576, 2147483647)
@@ -2223,7 +2223,7 @@ $Tasks = @(
         } catch { L ERROR "Process reduction failed: $($_.Exception.Message)" }
     } },
 
-    # PC haut de gamme (ex. i7-13700K + RTX 4080) : memoire, disque, pilotes Windows Update
+    # High-end PC (e.g. i7-13700K + RTX 4080): memory, disk, Windows Update drivers
     @{ Name = "High-End PC Tweaks (i7-13700K / RTX 4080 class)"; Script = {
         param($tempDir)
         try {
@@ -2236,7 +2236,7 @@ $Tasks = @(
             if ($build -lt 22000) { L WARNING "Windows 10 detected: Windows 11 is recommended for Intel hybrid CPUs (Thread Director P/E-core scheduling)" }
             if ($cpu.Name -match '1[34]\d{3}K') { L INFO "13th/14th gen Intel Core K CPU: keep the BIOS up to date (latest Intel microcode, 0x12B or newer) to avoid Vmin-shift instability" }
 
-            # Memoire : compression et fusion de pages inutiles avec beaucoup de RAM (moins de CPU / latence)
+            # Memory: compression and page combining are useless with plenty of RAM (less CPU / latency)
             P 20 "Memory management"
             if ($ramGB -ge 24) {
                 foreach ($opt in 'MemoryCompression', 'PageCombining') {
@@ -2244,12 +2244,12 @@ $Tasks = @(
                 }
             } else { L INFO "RAM below 24 GB: memory compression left enabled" }
 
-            # Disque : TRIM actif
+            # Disk: TRIM enabled
             P 45 "Disk"
             $r = Invoke-Native fsutil.exe @('behavior', 'set', 'DisableDeleteNotify', '0')
             if ($r.Code -eq 0) { L INFO "TRIM enabled (DisableDeleteNotify = 0)" }
 
-            # Windows Update : ne remplace plus le pilote NVIDIA, pas de redemarrage force pendant une session
+            # Windows Update: no longer replaces the NVIDIA driver, no forced reboot during a session
             P 60 "Windows Update policy"
             $wu = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
             $items = @(
@@ -2265,7 +2265,7 @@ $Tasks = @(
         } catch { L ERROR "High-end tweaks failed: $($_.Exception.Message)" }
     } },
 
-    # Demarrage : hyperviseur desactive (moins de surcout, anti-cheats plus sereins) + horloge systeme par defaut
+    # Boot: hypervisor disabled (less overhead, fewer anti-cheat issues) + default system timer
     @{ Name = "Boot Tweaks (hypervisor off, default system timer)"; Script = {
         param($tempDir)
         try {
@@ -2279,7 +2279,7 @@ $Tasks = @(
             if ($r.Code -eq 0) { L INFO "hypervisorlaunchtype = off (WSL2 / Docker / Windows Sandbox / Android apps stop working; revert: bcdedit /set hypervisorlaunchtype auto)" }
             else { L WARNING "bcdedit hypervisorlaunchtype failed: $($r.Out.Trim())" }
 
-            # Horloge : on s'assure qu'aucun HPET force n'est configure (valeur absente = comportement Windows par defaut, le plus rapide)
+            # Timer: make sure no forced HPET is configured (value absent = default Windows behavior, the fastest)
             P 65 "Default system timer"
             foreach ($v in 'useplatformclock', 'useplatformtick') {
                 $d = Invoke-Native bcdedit.exe @('/deletevalue', $v)
@@ -2290,7 +2290,7 @@ $Tasks = @(
         } catch { L ERROR "Boot tweaks failed: $($_.Exception.Message)" }
     } },
 
-    # Fonctionnalites Windows optionnelles inutiles pour le gaming (virtualisation, WSL, Sandbox, anciens composants)
+    # Optional Windows features useless for gaming (virtualization, WSL, Sandbox, legacy components)
     @{ Name = "Optional Windows Features Cleanup (Hyper-V / WSL / Sandbox / legacy)"; Timeout = 600; Script = {
         param($tempDir)
         try {
@@ -2317,7 +2317,7 @@ $Tasks = @(
         } catch { L ERROR "Optional features cleanup failed: $($_.Exception.Message)" }
     } },
 
-    # Peripheriques : Windows ne coupe plus l'alimentation des ports USB / souris / clavier / carte reseau (micro-coupures en jeu)
+    # Devices: Windows no longer cuts power to USB ports / mouse / keyboard / network adapter (micro-dropouts in game)
     @{ Name = "Device Power Management Off (USB / HID / Network)"; Script = {
         param($tempDir)
         try {
@@ -2337,16 +2337,16 @@ $Tasks = @(
         } catch { L ERROR "Device power management failed: $($_.Exception.Message)" }
     } },
 
-    # Peripheriques non utilises : entrees "fantomes" du Gestionnaire de peripheriques + anciennes versions de pilotes inutilisees
+    # Unused devices: "ghost" Device Manager entries + old unused driver versions
     @{ Name = "Device Cleanup (ghost devices + old driver packages)"; Timeout = 600; Script = {
         param($tempDir)
         try {
-            # ---- 1) Peripheriques fantomes : installes un jour, plus branches ----
+            # ---- 1) Ghost devices: installed once, no longer plugged in ----
             P 0 "Listing devices"
             $present = @{}
             foreach ($d in @(Get-PnpDevice -PresentOnly -ErrorAction Stop)) { $present[[string]$d.InstanceId] = $true }
             $allDevs = @(Get-PnpDevice -ErrorAction Stop)
-            # Types de peripheriques concernes (USB, manettes/souris/claviers, Bluetooth, anciennes cartes PCI, anciens ecrans, anciens peripheriques audio...)
+            # Device classes covered (USB, controllers/mice/keyboards, Bluetooth, old PCI cards, old monitors, old audio devices...)
             $prefixes    = @('USB\', 'USBSTOR\', 'HID\', 'BTHENUM\', 'BTH\', 'PCI\', 'SCSI\', 'DISPLAY\', 'WPDBUSENUM\', 'SWD\MMDEVAPI\', 'USBPRINT\', 'IMAGE\')
             $keepClasses = @('Volume', 'VolumeSnapshot', 'Computer', 'Processor', 'System', 'SecurityDevices', 'Firmware')
             $ghosts = New-Object 'System.Collections.Generic.List[object]'
@@ -2359,7 +2359,7 @@ $Tasks = @(
 
             $removed = 0; $failed = 0
             if ($ghosts.Count -gt 0) {
-                # Liste conservee : un peripherique retire se reinstalle tout seul au prochain branchement
+                # List kept: a removed device reinstalls itself next time it is plugged in
                 $csv = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'CleanWindows-RemovedGhostDevices.csv'
                 try { $ghosts | Select-Object Class, FriendlyName, InstanceId | Export-Csv -LiteralPath $csv -NoTypeInformation -Encoding UTF8; L INFO "Removed-device list saved: $csv" } catch { }
                 $i = 0
@@ -2371,7 +2371,7 @@ $Tasks = @(
                 }
             }
 
-            # ---- 2) Anciennes versions de pilotes tiers (ex. anciens pilotes graphiques) : on garde la plus recente ----
+            # ---- 2) Old third-party driver versions (e.g. old graphics drivers): keep the newest ----
             P 50 "Reading third-party driver packages (can take a minute)"
             $drivers = @(Get-WindowsDriver -Online -All -ErrorAction Stop)
             $groups = $drivers | Group-Object -Property { '{0}|{1}|{2}' -f (Split-Path ([string]$_.OriginalFileName) -Leaf), $_.ProviderName, $_.ClassName }
@@ -2385,7 +2385,7 @@ $Tasks = @(
             $oldRemoved = 0; $oldInUse = 0; $j = 0
             foreach ($o in $targets) {
                 $j++
-                # Sans /force : Windows refuse de supprimer un pilote encore utilise par un peripherique
+                # Without /force: Windows refuses to delete a driver still used by a device
                 $r = Invoke-Native pnputil.exe @('/delete-driver', [string]$o.Driver)
                 if ($r.Code -in 0, 3010) { $oldRemoved++; L INFO "Old driver removed: $($o.Driver) [$($o.ProviderName) / $($o.ClassName) $($o.Version)]" } else { $oldInUse++ }
                 P (52 + [int](46 * $j / [Math]::Max(1, $targets.Count))) "Old driver $j/$($targets.Count)"
@@ -2395,7 +2395,7 @@ $Tasks = @(
         } catch { L ERROR "Device cleanup failed: $($_.Exception.Message)" }
     } },
 
-    # Magasin de composants Windows : supprime les anciennes versions de composants (libere souvent plusieurs Go ; peut durer plusieurs minutes)
+    # Windows component store: removes old component versions (often frees several GB; can take several minutes)
     @{ Name = "Component Store Cleanup (DISM)"; Timeout = 900; Script = {
         param($tempDir, $selfPath, $cleanDownloads, $runCleanup)
         try {
@@ -2409,7 +2409,7 @@ $Tasks = @(
         } catch { L ERROR "Component store cleanup failed: $($_.Exception.Message)" }
     } },
 
-    # Controle materiel : RAM (XMP / EXPO), liaison PCIe et Resizable BAR de la carte NVIDIA, DirectStorage (BypassIO)
+    # Hardware check: RAM (XMP / EXPO), PCIe link and Resizable BAR of the NVIDIA card, DirectStorage (BypassIO)
     @{ Name = "Hardware Health Check (RAM speed, PCIe, Resizable BAR, DirectStorage)"; Script = {
         param($tempDir)
         function Note { param([string]$Text) L INFO ("CHECK " + $Text) }
@@ -2465,7 +2465,7 @@ $Tasks = @(
         } catch { L ERROR "Hardware check failed: $($_.Exception.Message)" }
     } },
 
-    # Verification finale : relit l'etat reel du PC (apparait dans CLEANWINDOWS-RESUME.TXT)
+    # Final check: reads back the PC's actual state (shown in CLEANWINDOWS-SUMMARY.TXT)
     @{ Name = "Final Check (read-back report)"; Script = {
         param($tempDir)
         function Chk { param($Label, [scriptblock]$Get) try { $v = & $Get; L INFO ("CHECK {0}: {1}" -f $Label, $v) } catch { L INFO ("CHECK {0}: unavailable" -f $Label) } }
@@ -2493,7 +2493,7 @@ $Tasks = @(
         } catch { L ERROR "Final check failed: $($_.Exception.Message)" }
     } },
 
-    # Redemarrage de l'Explorateur (applique menu contextuel, theme, menu demarrer)
+    # Explorer restart (applies context menu, theme, Start menu)
     @{ Name = "Restart Explorer (apply changes)"; Script = {
         param($tempDir)
         try {
@@ -2508,7 +2508,7 @@ $Tasks = @(
         } catch { L ERROR "Explorer restart failed: $($_.Exception.Message)" }
     } },
 
-    # Nettoyage final : Telechargements + disque C:
+    # Final cleanup: Downloads + C: drive
     @{ Name = "Final Cleanup (Downloads / Disk C:)"; Script = {
         param($tempDir, $selfPath, $cleanDownloads)
         try {
@@ -2553,8 +2553,8 @@ $Tasks = @(
                 $n = 0
                 if (Test-Path -LiteralPath $dl) {
                     foreach ($item in @(Get-ChildItem -LiteralPath $dl -Force -ErrorAction SilentlyContinue)) {
-                        # On ne supprime jamais le script lui-meme ni son lanceur
-                        if ($item.FullName -eq $selfPath -or $item.Name -like 'AllInOne*' -or $item.Name -like 'Lancer-AllInOne*') { continue }
+                        # Never delete the script itself or its launcher
+                        if ($item.FullName -eq $selfPath -or $item.Name -like 'AllInOne*' -or $item.Name -like 'Launch-AllInOne*') { continue }
                         Remove-Item -LiteralPath $item.FullName -Recurse -Force -ErrorAction SilentlyContinue
                         $n++
                     }
@@ -2569,13 +2569,13 @@ $Tasks = @(
         } catch { L ERROR "Final cleanup failed: $($_.Exception.Message)" }
     } }
 
-    # Edge / WebView2 : optimises (pas supprimes) par la tache "Edge / WebView2 - Gaming Optimization".
+    # Edge / WebView2 : optimized (not removed) by the task "Edge / WebView2 - Gaming Optimization".
 )
 
 # =============================================================================
 # MAIN EXECUTION
 # =============================================================================
-# Selection des taches : -Only / -Skip (mots contenus dans le nom, separes par des virgules) et -List
+# Task selection: -Only / -Skip (words contained in the name, comma-separated) and -List
 $onlyList = @($Only -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 $skipList = @($Skip -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 $selected = @($Tasks)
@@ -2620,35 +2620,35 @@ if ($bad.Count -eq 0) {
     Write-Host "Done with $($bad.Count) problem(s):" -ForegroundColor Yellow
     $bad | ForEach-Object { Write-Host "  - $($_.Name): $($_.Status)" -ForegroundColor Yellow }
 }
-# Resume pret a envoyer (taches, durees, avertissements / erreurs)
+# Ready-to-send summary (tasks, durations, warnings / errors)
 $resumePath = $null
 try {
     $desk = [Environment]::GetFolderPath('Desktop')
-    $resumePath = Join-Path $desk 'CLEANWINDOWS-RESUME.TXT'
+    $resumePath = Join-Path $desk 'CLEANWINDOWS-SUMMARY.TXT'
     $out = New-Object 'System.Collections.Generic.List[string]'
-    $out.Add("All-In-One Clean Windows - resume - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
-    $out.Add("Duree totale: $([int]((Get-Date) - $script:RunStart).TotalMinutes) min | Log complet: $script:ActiveLog")
+    $out.Add("All-In-One Clean Windows - summary - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+    $out.Add("Total duration: $([int]((Get-Date) - $script:RunStart).TotalMinutes) min | Full log: $script:ActiveLog")
     $out.Add('')
-    $out.Add('TACHES')
+    $out.Add('TASKS')
     foreach ($s in $script:Summary) { $out.Add(("  {0,-62} {1,-20} {2,5}s" -f $s.Name, $s.Status, $s.Seconds)) }
     $out.Add('')
-    $out.Add('VERIFICATION DE L''ETAT FINAL')
+    $out.Add('FINAL STATE CHECK')
     foreach ($ck in $script:Checks) { $out.Add("  $ck") }
     $out.Add('')
-    # Mesures avant -> maintenant (l'effet complet des services / processus n'apparait qu'apres redemarrage)
+    # Before -> now measurements (the full effect on services / processes only shows after a reboot)
     try {
         $after = Get-SystemMetrics
         $ref   = $script:BaselineRef
-        $out.Add('MESURES (avant -> maintenant ; l''effet complet arrive apres redemarrage)')
+        $out.Add('MEASUREMENTS (before -> now; full effect shows after reboot)')
         foreach ($mk in $after.Keys) { $out.Add(("  {0,-18} {1,8} -> {2,8}" -f $mk, $(if ($ref) { $ref.$mk } else { 'n/a' }), $after[$mk])) }
         $out.Add('')
     } catch { }
-    $out.Add("AVERTISSEMENTS / ERREURS ($($script:Problems.Count))")
+    $out.Add("WARNINGS / ERRORS ($($script:Problems.Count))")
     foreach ($pl in $script:Problems) { $out.Add("  $pl") }
     Set-Content -LiteralPath $resumePath -Value $out -Encoding UTF8
 } catch { $resumePath = $null }
 
-# --- Rapport "apres redemarrage" : un petit script s'execute UNE fois a la prochaine ouverture de session ---
+# --- "After reboot" report: a small script runs ONCE at the next sign-in ---
 $postTemplate = @'
 Start-Sleep -Seconds 150
 $ErrorActionPreference = 'SilentlyContinue'
@@ -2667,8 +2667,8 @@ $now = [ordered]@{
 $base = $null
 if (Test-Path -LiteralPath $baseFile) { $base = (Get-Content -LiteralPath $baseFile -Raw | ConvertFrom-Json).Metrics }
 $o = New-Object 'System.Collections.Generic.List[string]'
-$o.Add('All-In-One Clean Windows - apres redemarrage - ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
-$o.Add('(mesure environ 2 min 30 apres l''ouverture de session ; "avant" = mesure prise avant le premier passage du script)')
+$o.Add('All-In-One Clean Windows - after reboot - ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+$o.Add('(measured about 2 min 30 s after sign-in; "before" = measurement taken before the script''s first run)')
 $o.Add('')
 foreach ($k in $now.Keys) { $b = if ($base) { $base.$k } else { 'n/a' }; $o.Add(('  {0,-18} {1,8} -> {2,8}' -f $k, $b, $now[$k])) }
 try {
@@ -2682,16 +2682,16 @@ Set-Content -LiteralPath $outFile -Value $o -Encoding UTF8
 try {
     $postFile = Join-Path $docs 'CleanWindows-PostReboot.ps1'
     $deskDir  = [Environment]::GetFolderPath('Desktop')
-    $postText = $postTemplate.Replace('__BASE__', $script:BaselineFile.Replace("'", "''")).Replace('__OUT__', (Join-Path $deskDir 'CLEANWINDOWS-APRES-REBOOT.TXT').Replace("'", "''"))
+    $postText = $postTemplate.Replace('__BASE__', $script:BaselineFile.Replace("'", "''")).Replace('__OUT__', (Join-Path $deskDir 'CLEANWINDOWS-AFTER-REBOOT.TXT').Replace("'", "''"))
     Set-Content -LiteralPath $postFile -Value $postText -Encoding UTF8
     $ro = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce'
     if (-not (Test-Path -LiteralPath $ro)) { New-Item -Path $ro -Force | Out-Null }
     Set-ItemProperty -LiteralPath $ro -Name 'CleanWindowsPostReboot' -Value ('powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f $postFile)
-    Write-Log "Post-reboot comparison scheduled (runs once at next sign-in): Desktop\CLEANWINDOWS-APRES-REBOOT.TXT"
+    Write-Log "Post-reboot comparison scheduled (runs once at next sign-in): Desktop\CLEANWINDOWS-AFTER-REBOOT.TXT"
 } catch { Write-Log "Could not schedule the post-reboot report: $($_.Exception.Message)" "WARNING" }
 Write-Host "Full log: $script:ActiveLog" -ForegroundColor Gray
 if ($resumePath) { Write-Host "Summary (send me this file if something failed): $resumePath" -ForegroundColor White }
-Write-Host "After the next reboot, a before/after comparison appears on your Desktop (CLEANWINDOWS-APRES-REBOOT.TXT)." -ForegroundColor Gray
+Write-Host "After the next reboot, a before/after comparison appears on your Desktop (CLEANWINDOWS-AFTER-REBOOT.TXT)." -ForegroundColor Gray
 Write-Host ""
 Read-Host "Press Enter to close"
 

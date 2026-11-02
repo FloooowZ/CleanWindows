@@ -1,11 +1,11 @@
 # All-In-One Clean Windows (Gaming)
 
-Script PowerShell qui optimise Windows 11 pour le gaming : suppression du bloatware, services et démarrage minimaux,
-thème noir, réseau, son, Defender, NVIDIA, OBS (profil Twitch 1080p60), nettoyage final, etc.
+PowerShell script that optimizes Windows 11 for gaming: bloatware removal, minimal services and startup programs,
+full black theme, network, sound, Defender, NVIDIA driver, software installs, final cleanup, and more.
 
-## Installation / lancement (PowerShell)
+## Install / run (PowerShell)
 
-Ouvre **PowerShell** (pas CMD) et colle :
+Open **PowerShell** (not CMD) and paste:
 
 ```powershell
 $u = "https://raw.githubusercontent.com/FloooowZ/CleanWindows/main/AllInOne-CleanWindows-Standalone.ps1"
@@ -14,77 +14,123 @@ irm $u -OutFile $f
 powershell -NoProfile -ExecutionPolicy Bypass -File $f
 ```
 
-Le script se relance tout seul en administrateur (accepte la demande UAC).
+The script relaunches itself as administrator (accept the UAC prompt).
 
-Version courte (une seule ligne) :
+Short version (single line):
 
 ```powershell
 irm "https://raw.githubusercontent.com/FloooowZ/CleanWindows/main/AllInOne-CleanWindows-Standalone.ps1" -OutFile "$env:TEMP\a.ps1"; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\a.ps1"
 ```
 
-Remplace `<USER>` par ton nom d'utilisateur GitHub et `<REPO>` par le nom du dépôt.
+> `irm ... | iex` is **not** supported: the script must be a file so it can relaunch itself as administrator.
 
-> `irm ... | iex` n'est **pas** pris en charge : le script a besoin d'être un fichier pour se relancer en administrateur.
+## Run from the Command Prompt (CMD)
 
-## Lancement depuis l'invite de commande (CMD)
-
-Colle cette ligne dans CMD :
+Paste this line into CMD:
 
 ```bat
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/FloooowZ/CleanWindows/main/AllInOne-CleanWindows-Standalone.ps1' -OutFile $env:TEMP\a.ps1; & $env:TEMP\a.ps1"
 ```
 
-Ou double-clique sur `Lancer-Depuis-GitHub.bat` : il télécharge toujours la dernière version du script depuis GitHub.
+Or double-click `Launch-From-GitHub.bat`: it always downloads the latest version of the script from GitHub.
 
-## Options de lancement
+If you downloaded the whole repository, double-click `Launch-AllInOne.bat` (next to the `.ps1`) to run the local copy as administrator.
+
+## Launch options
 
 ```powershell
-# Liste les tâches (numéro + nom) sans rien exécuter
+# List the tasks (number + name) without running anything
 powershell -NoProfile -ExecutionPolicy Bypass -File $f -List
 
-# Ne lance que certaines tâches (mots contenus dans le nom, séparés par des virgules)
+# Run only some tasks (words contained in the name, comma-separated)
 powershell -NoProfile -ExecutionPolicy Bypass -File $f -Only "Services,Startup,Network"
 
-# Lance tout sauf certaines tâches
+# Run everything except some tasks
 powershell -NoProfile -ExecutionPolicy Bypass -File $f -Skip "Plex,Component Store"
 ```
 
+## Tasks
+
+Each task runs in its own job with a timeout (5 minutes by default, longer for downloads / DISM). In order:
+
+- System Restore Point (safety)
+- Visual C++ Redistributable x64 / x86, DirectX End-User Runtime
+- Context Menu Clean
+- AI Bloatware Removal (Copilot / Recall)
+- Useless Apps Removal (APPX)
+- Xbox / Gamebar Uninstall
+- OneDrive Uninstall
+- MSI Mode (GPU)
+- Power Plan - Gaming (Ultimate Performance)
+- Theme Black (Full Dark Everywhere)
+- Windows Performance (Gaming + No Animations)
+- Mouse Optimization (no acceleration, 1:1)
+- Explorer Optimization (This PC + no history)
+- Edge / WebView2 - Gaming Optimization
+- Microsoft Store Optimization
+- Windows Defender - Gaming Performance (antivirus only)
+- Start Menu - Simple & Clean
+- Taskbar - End Task in right-click menu
+- Ensure winget (App Installer)
+- Install Escape From Tarkov Launcher, Steam, VLC, Plex, Google Chrome, Discord, NanaZip, Notepad++
+- Install MSI Afterburner + RTSS (FPS only)
+- Gaming Runtimes (legacy VC++ + .NET)
+- NVIDIA - Install NVCleanstall / Download latest Game Ready driver / Debloated driver install / Control Panel
+- Display Mode (2560x1440 @ up to 180 Hz)
+- Sound - Disable Windows Spatial Audio
+- Network Optimization (Gaming IPv4)
+- Services Optimization (Gaming)
+- Startup Programs + Scheduled Tasks (Minimal)
+- Process Reduction (svchost grouping)
+- High-End PC Tweaks (i7-13700K / RTX 4080 class)
+- Boot Tweaks (hypervisor off, default system timer)
+- Optional Windows Features Cleanup (Hyper-V / WSL / Sandbox / legacy)
+- Device Power Management Off (USB / HID / Network)
+- Device Cleanup (ghost devices + old driver packages)
+- Component Store Cleanup (DISM)
+- Hardware Health Check (RAM speed, PCIe, Resizable BAR, DirectStorage)
+- Final Check (read-back report)
+- Restart Explorer (apply changes)
+- Final Cleanup (Downloads / Disk C:)
+
+Use `-List` to see the exact, numbered list.
+
 ## NVIDIA
 
-Si une carte NVIDIA est détectée, le script :
+If an NVIDIA card is detected, the script:
 
-1. installe **NVCleanstall** (TechPowerUp), pour un usage manuel : il n'a pas de mode automatique ;
-2. télécharge le **dernier pilote Game Ready** depuis NVIDIA ;
-3. l'installe en version **allégée** (pilote d'affichage + audio HDMI/DP + PhysX, sans GeForce Experience, NVIDIA App ni télémétrie), comme le fait NVCleanstall ;
-4. installe le **Panneau de configuration NVIDIA** (Microsoft Store).
+1. installs **NVCleanstall** (TechPowerUp) for manual use: it has no automatic mode;
+2. downloads the **latest Game Ready driver** from NVIDIA;
+3. installs it as a **slimmed-down** build (display driver + HDMI/DP audio + PhysX, without GeForce Experience, NVIDIA App or telemetry), the way NVCleanstall does;
+4. installs the **NVIDIA Control Panel** (Microsoft Store).
 
-Aucune question n'est posée. Les tâches NVIDIA sont ignorées s'il n'y a pas de carte NVIDIA.
-Une tâche distincte met l'écran en 2560x1440 à la fréquence maximale jusqu'à 180 Hz (sans effet si l'écran n'a pas ce mode ; `-Skip "Display Mode"` pour l'ignorer).
+No questions are asked. The NVIDIA tasks are skipped if there is no NVIDIA card.
+A separate task sets the display to 2560x1440 at the highest refresh rate up to 180 Hz (no effect if the monitor lacks this mode; use `-Skip "Display Mode"` to skip it).
 
-## Rapports générés
+## Generated reports
 
-| Fichier | Contenu |
+| File | Contents |
 |---|---|
-| `Bureau\CLEANWINDOWS-RESUME.TXT` | Tâches, durées, vérification de l'état final, mesures avant → maintenant, avertissements/erreurs |
-| `Bureau\CLEANWINDOWS-APRES-REBOOT.TXT` | Comparaison avant → après redémarrage (créée automatiquement ~2 min 30 après la prochaine ouverture de session) |
-| `Documents\CLEANWINDOWSLOG.TXT` | Journal complet |
-| `Documents\CleanWindows-Baseline.json` | Mesure initiale (conservée aux relances) |
-| `Documents\CleanWindows-RestoreServices.ps1` | Restauration des services désactivés |
-| `Documents\CleanWindows-RemovedGhostDevices.csv` | Périphériques fantômes supprimés |
+| `Desktop\CLEANWINDOWS-SUMMARY.TXT` | Tasks, durations, final state check, before → now measurements, warnings/errors |
+| `Desktop\CLEANWINDOWS-AFTER-REBOOT.TXT` | Before → after reboot comparison (created automatically ~2 min 30 s after the next sign-in) |
+| `Documents\CLEANWINDOWSLOG.TXT` | Full log |
+| `Documents\CleanWindows-Baseline.json` | Initial measurement (kept across re-runs) |
+| `Documents\CleanWindows-RestoreServices.ps1` | Restores the disabled services |
+| `Documents\CleanWindows-RemovedGhostDevices.csv` | Removed ghost devices |
 
-Sur un **ordinateur portable**, le script laisse les réglages batterie, l'hibernation et l'économie d'énergie des périphériques inchangés.
+On a **laptop**, the script leaves battery settings, hibernation and device power saving unchanged.
 
-## Après le passage
+## After the run
 
-- Résumé (tâches, durées, vérification de l'état final, avertissements) : `Bureau\CLEANWINDOWS-RESUME.TXT`
-- Journal complet : `Documents\CLEANWINDOWSLOG.TXT`
-- Script de restauration des services : `Documents\CleanWindows-RestoreServices.ps1`
-- Redémarre le PC à la fin.
+- Summary (tasks, durations, final state check, warnings): `Desktop\CLEANWINDOWS-SUMMARY.TXT`
+- Full log: `Documents\CLEANWINDOWSLOG.TXT`
+- Services restore script: `Documents\CleanWindows-RestoreServices.ps1`
+- Reboot the PC at the end.
 
-## Réglages en haut du script
+## Settings at the top of the script
 
-| Variable | Rôle |
+| Variable | Purpose |
 |---|---|
-| `$TaskTimeoutSeconds` | Délai maximum par tâche (300 s) |
-| `$CleanUserDownloads` | Vide aussi le dossier Téléchargements à la fin |
-| `$RunComponentCleanup` | Nettoyage DISM du magasin de composants (long) |
+| `$TaskTimeoutSeconds` | Maximum time per task (300 s) |
+| `$CleanUserDownloads` | Also empties the Downloads folder at the end |
+| `$RunComponentCleanup` | DISM component store cleanup (slow) |
